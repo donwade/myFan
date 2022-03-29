@@ -170,7 +170,9 @@ hw_timer_t * hRotationStoppedTimer = NULL;
 
 portMUX_TYPE criticalSection = portMUX_INITIALIZER_UNLOCKED;
 
-void IRAM_ATTR isrTimedOut()
+boolean bStalled = true;
+
+void IRAM_ATTR irqTimedOut()
 {
    Amessage fanSpeed = -1;  // indicate the fan stopped turning
 
@@ -178,6 +180,7 @@ void IRAM_ATTR isrTimedOut()
    timerCntISR++;
 
    bTimerRunning = false;  // needs re-init when spinning starts.
+   bStalled = true;
 
    if (DIO2Dataqueue) xQueueSendToBackFromISR(DIO2Dataqueue, &fanSpeed, NULL);
 
@@ -192,7 +195,7 @@ void setupDeadAirTimer()
 {
 
     hRotationStoppedTimer = timerBegin(0, 80, true);  // 80Mhz/80 = 1Mhz tick rate
-    timerAttachInterrupt(hRotationStoppedTimer, &isrTimedOut, true);
+    timerAttachInterrupt(hRotationStoppedTimer, &irqTimedOut, true);
 
     // Sets an alarm to sound every X mS
     timerAlarmWrite(hRotationStoppedTimer, ROTATION_STOPPED_uS, false);  // no auto reload
@@ -381,7 +384,8 @@ void irq_handler(void)
     // set rotation timer back to zero.
     timerWrite(hRotationStoppedTimer, 0); //set count to zero.
 
-    if (DIO2Dataqueue) xQueueSendToBackFromISR(DIO2Dataqueue, &xdiff, NULL);
+    if (DIO2Dataqueue && !bStalled) xQueueSendToBackFromISR(DIO2Dataqueue, &xdiff, NULL);
+    bStalled = false;
 
 }
 
