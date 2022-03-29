@@ -18,6 +18,11 @@ volatile bool bTimerRunning;
 static QueueHandle_t DIO2Dataqueue = NULL;
 typedef long Amessage;
 
+
+#define HLEN (1<<4)
+Amessage rpmHistory[HLEN] ={0};
+
+
 //------------------------------------------------------------
 // For a connection via I2C using the Arduino Wire include:
 #include <Wire.h>              // Only needed for Arduino 1.6.5 and earlier
@@ -175,6 +180,7 @@ boolean bStalled = true;
 void IRAM_ATTR irqTimedOut()
 {
    Amessage fanSpeed = -1;  // indicate the fan stopped turning
+   memset(rpmHistory, 0, sizeof(rpmHistory));
 
    portENTER_CRITICAL_ISR(&criticalSection);
    timerCntISR++;
@@ -211,6 +217,9 @@ void rpmTask( void * parameter )
 {
    Amessage timeUsPerRevolution;
    Serial.printf("%s task running\n", __FUNCTION__);
+   Amessage average;
+   int index = 0;
+
 
    float RPS;
 
@@ -221,12 +230,22 @@ void rpmTask( void * parameter )
       // if no response in 2mS then the data burst is finished.
       if ( xQueueReceive( DIO2Dataqueue, &( timeUsPerRevolution ),  1000 *portTICK_PERIOD_MS ))
       {
+          rpmHistory[index] = timeUsPerRevolution;
+          index = (++index) & (HLEN-1);
+
+          average = 0;
+          for (int i = 0; i < HLEN; i++)
+          {
+            average += rpmHistory[i];
+          }
+          average /= HLEN;
 
           RPS = 1000000. / (float) timeUsPerRevolution;
 
-          Serial.printf("%6.1f\t", RPS * 60);  // into RPM
+          //Serial.printf("%6.1f\t", RPS * 60);  // into RPM
+          Serial.printf("[%5d %5d]\t", average, timeUsPerRevolution);  // into RPM
           crlf++;
-          if (!(crlf % 6)) Serial.println();
+          if (!(crlf % 4)) Serial.println();
       }
       else
           Serial.printf(".");
