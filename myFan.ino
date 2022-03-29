@@ -22,6 +22,8 @@ typedef long Amessage;
 #define HLEN (1<<4)
 Amessage rpmHistory[HLEN] ={0};
 
+int requestPctPwr;
+
 
 //------------------------------------------------------------
 // For a connection via I2C using the Arduino Wire include:
@@ -217,11 +219,12 @@ void rpmTask( void * parameter )
 {
    Amessage timeUsPerRevolution;
    Serial.printf("%s task running\n", __FUNCTION__);
-   Amessage average;
+   Amessage avgPeriod;
    int index = 0;
 
 
    float RPS;
+   float RPMA;
 
    unsigned char crlf = 0;
 
@@ -233,19 +236,20 @@ void rpmTask( void * parameter )
           rpmHistory[index] = timeUsPerRevolution;
           index = (++index) & (HLEN-1);
 
-          average = 0;
+          avgPeriod = 0;
           for (int i = 0; i < HLEN; i++)
           {
-            average += rpmHistory[i];
+            avgPeriod += rpmHistory[i];
           }
-          average /= HLEN;
+          avgPeriod /= HLEN;
 
-          RPS = 1000000. / (float) timeUsPerRevolution;
+          RPS  = 1000000. / (float) timeUsPerRevolution;  // PRS instant
+          RPMA = 1000000. * 60. / (float) avgPeriod;        // RPM average
 
-          //Serial.printf("%6.1f\t", RPS * 60);  // into RPM
-          Serial.printf("[%5d %5d]\t", average, timeUsPerRevolution);  // into RPM
+          Serial.printf("[%d %6.1f]\t", requestPctPwr, RPMA);  // into RPM
+          //Serial.printf("[%5d %5d]\t", average, timeUsPerRevolution);  // RPS
           crlf++;
-          if (!(crlf % 4)) Serial.println();
+          if (1 || !(crlf % 4)) Serial.println();
       }
       else
           Serial.printf(".");
@@ -302,6 +306,7 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   setOLED();
+  setupPWM();
 
   // auto detect if a DUMB 433 is on the esp32
   Serial.printf("checking pin %d for dumb 433 device\n", DUMB_433_INPUT);
@@ -410,7 +415,87 @@ void irq_handler(void)
 
 void loop()
 {
+   loopPWM();
    // only needed for watchdog.
-   vTaskSuspend(NULL);
+   //vTaskSuspend(NULL);
+}
+//------------------------------------------------------------------------------
+
+/*
+  ESP32 PCA9685 Servo Control
+  esp32-pca9685.ino
+  Driving multiple servo motors with ESP32 and PCA9685 PWM module
+  Use I2C Bus
+
+  DroneBot Workshop 2020
+  https://dronebotworkshop.com
+*/
+
+// Include Wire Library for I2C
+#include <Wire.h>
+
+// Include Adafruit PCA9685 Servo Library
+#include <Adafruit_PWMServoDriver.h>
+
+// Creat object to represent PCA9685 at default I2C address
+Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(0x40);
+
+// Define maximum and minimum number of "ticks" for the servo motors
+// Range from 0 to 4095
+// This determines the pulse width
+
+#define SERVOMIN  80  // Minimum value
+#define SERVOMAX  4000  //600  // Maximum value
+
+// Define servo motor connections (expand as required)
+#define SERVO1  15  //Servo Motor 1 on connector 12
+
+#define SPEED 100  //time in ms b/n steps.
+
+void setupPWM() {
+
+  // Serial monitor setup
+  Serial.begin(115200);
+
+  // Print to monitor
+  Serial.println("PCA9685 Servo Test");
+
+  // Initialize PCA9685
+  pca9685.begin();
+
+  // Set PWM Frequency to x Hz
+  pca9685.setPWMFreq(3500);
+
 }
 
+
+void loopPWM() {
+  int pwm1;
+
+  // Move Motor 1 from 180 to 0 degrees
+  for (requestPctPwr = 100; requestPctPwr >= 0; requestPctPwr--) {
+
+    // Determine PWM pulse width
+    pwm1 = map(requestPctPwr, 0, 100, SERVOMIN, SERVOMAX);
+    // Write to PCA9685
+    pca9685.setPWM(SERVO1, 0, pwm1);
+    // Print to serial monitor
+    Serial.printf("Motor 1 = %d\n ", requestPctPwr);
+    delay(SPEED);
+  }
+
+  // Move Motor 1 from 0 to 180 degrees
+  for (requestPctPwr = 0; requestPctPwr <= 100; requestPctPwr++) {
+
+    // Determine PWM pulse width
+    pwm1 = map(requestPctPwr, 0, 100, SERVOMIN, SERVOMAX);
+    // Write to PCA9685
+    pca9685.setPWM(SERVO1, 0, pwm1);
+    // Print to serial monitor
+    Serial.printf("Motor 1 = %d\n ", requestPctPwr);
+    delay(SPEED);
+  }
+
+  yield();
+
+}

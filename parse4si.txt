@@ -243,6 +243,8 @@ z:/home/dwade/.arduino15/packages/esp32/hardware/esp32/1.0.6/tools/sdk/include/w
 z:/home/dwade/.arduino15/packages/esp32/hardware/esp32/1.0.6/tools/sdk/include/wifi_provisioning/wifi_provisioning/manager.h
 z:/home/dwade/.arduino15/packages/esp32/hardware/esp32/1.0.6/tools/sdk/include/wifi_provisioning/wifi_provisioning/wifi_config.h
 z:/home/dwade/.arduino15/packages/esp32/hardware/esp32/1.0.6/variants/ttgo-lora32-v1/pins_arduino.h
+z:/home/dwade/Arduino/libraries/Adafruit_PWM_Servo_Driver_Library/Adafruit_PWMServoDriver.cpp
+z:/home/dwade/Arduino/libraries/Adafruit_PWM_Servo_Driver_Library/Adafruit_PWMServoDriver.h
 z:/home/dwade/Arduino/libraries/ESP8266_and_ESP32_OLED_driver_for_SSD1306_displays/src/OLEDDisplay.cpp
 z:/home/dwade/Arduino/libraries/ESP8266_and_ESP32_OLED_driver_for_SSD1306_displays/src/OLEDDisplay.h
 z:/home/dwade/Arduino/libraries/ESP8266_and_ESP32_OLED_driver_for_SSD1306_displays/src/OLEDDisplayFonts.h
@@ -456,3 +458,4 @@ z:/home/dwade/new.433/RadioLib/src/protocols/RTTY/RTTY.h
 z:/home/dwade/new.433/RadioLib/src/protocols/SSTV/SSTV.cpp
 z:/home/dwade/new.433/RadioLib/src/protocols/SSTV/SSTV.h
 z:/home/dwade/new.433/RadioLib/src/protocols/TransportLayer/TransportLayer.h
+z:/home/dwade/wifiSecret.h
