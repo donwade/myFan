@@ -7,7 +7,7 @@
 
 
 #define GREEN_LED       25 // TTGO GPIO25
-#define DUMB_433_INPUT  34   // OREGON DIRECT on chip
+#define RPM_INPUT_PIN       34
 
 #define BOOT_MSG1 "simple 433 reciever connected to pin 34"
 
@@ -177,7 +177,7 @@ hw_timer_t * hRotationStoppedTimer = NULL;
 
 portMUX_TYPE criticalSection = portMUX_INITIALIZER_UNLOCKED;
 
-boolean bStalled = true;
+boolean bStalled = false;
 
 void IRAM_ATTR irqTimedOut()
 {
@@ -246,7 +246,7 @@ void rpmTask( void * parameter )
           RPS  = 1000000. / (float) timeUsPerRevolution;  // PRS instant
           RPMA = 1000000. * 60. / (float) avgPeriod;        // RPM average
 
-          Serial.printf("[%d %6.1f]\t", requestPctPwr, RPMA);  // into RPM
+          Serial.printf("[%4d %6.1f]\t", requestPctPwr, RPMA);  // into RPM
           //Serial.printf("[%5d %5d]\t", average, timeUsPerRevolution);  // RPS
           crlf++;
           if (1 || !(crlf % 4)) Serial.println();
@@ -304,14 +304,12 @@ void print_reset_reason(/*RESET_REASON*/ int reason)
 void setup() {
 
   Serial.begin(115200);
-  delay(1000);
-  setOLED();
+  delay(2000);
+
+  // address conflict setOLED();
+
+  Serial.printf("xxxx\n");
   setupPWM();
-
-  // auto detect if a DUMB 433 is on the esp32
-  Serial.printf("checking pin %d for dumb 433 device\n", DUMB_433_INPUT);
-
-  pinMode(DUMB_433_INPUT, INPUT);
 
   Serial.println("CPU0 reset reason: ");
   print_reset_reason(rtc_get_reset_reason(0));
@@ -364,19 +362,28 @@ void setup() {
 
   setupDeadAirTimer();
 
-  pinMode(DUMB_433_INPUT, INPUT_PULLUP);
   DIO2Dataqueue = xQueueCreate(200, sizeof(Amessage));
 
-  attachInterrupt(DUMB_433_INPUT, irq_handler, FALLING); // duty cycle varies, measure freq
+  pinMode(RPM_INPUT_PIN, INPUT);
+  attachInterrupt(RPM_INPUT_PIN, irq_handler, FALLING); // duty cycle varies, measure freq
 
    xTaskCreatePinnedToCore(
-                  rpmTask,      /* Function to implement the task */
-                  "DIO2Task",     /* Name of the task */
+                  rpmTask,       /* Function to implement the task */
+                  "rpmTask",      /* Name of the task */
                   10000,          /* Stack size in words */
-                  (void *)99,      /* Task input parameter */
+                  (void *)99,     /* Task input parameter */
                   0,              /* Priority of the task */
                   NULL,           /* Task handle. */
                   1);             /* Core where the task should run */
+
+    xTaskCreatePinnedToCore(
+                   controlTask,   /* Function to implement the task */
+                   "controlTask",  /* Name of the task */
+                   10000,          /* Stack size in words */
+                   (void *)99,     /* Task input parameter */
+                   0,              /* Priority of the task */
+                   NULL,           /* Task handle. */
+                   1);             /* Core where the task should run */
 
     delay(3000);
 
@@ -415,9 +422,7 @@ void irq_handler(void)
 
 void loop()
 {
-   loopPWM();
-   // only needed for watchdog.
-   //vTaskSuspend(NULL);
+   vTaskSuspend(NULL);
 }
 //------------------------------------------------------------------------------
 
@@ -450,7 +455,7 @@ Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(0x40);
 // Define servo motor connections (expand as required)
 #define SERVO1  15  //Servo Motor 1 on connector 12
 
-#define SPEED 100  //time in ms b/n steps.
+#define SPEED 3000  //time in ms b/n steps.
 
 void setupPWM() {
 
@@ -468,34 +473,38 @@ void setupPWM() {
 
 }
 
+//-------------------------------------------------------------
+void controlTask( void * parameter )
+{
+    Serial.printf("%s started\n", __FUNCTION__);
+    while (1)
+    {
+      int pwm1;
 
-void loopPWM() {
-  int pwm1;
+      // Move Motor 1 from 180 to 0 degrees
+      for (requestPctPwr = 100; requestPctPwr >= 0; requestPctPwr--) {
 
-  // Move Motor 1 from 180 to 0 degrees
-  for (requestPctPwr = 100; requestPctPwr >= 0; requestPctPwr--) {
+        // Determine PWM pulse width
+        pwm1 = map(requestPctPwr, 0, 100, SERVOMIN, SERVOMAX);
+        // Write to PCA9685
+        pca9685.setPWM(SERVO1, 0, pwm1);
+        // Print to serial monitor
+        //Serial.printf("Motor 1 = %d\n ", requestPctPwr);
+        delay(SPEED);
+      }
 
-    // Determine PWM pulse width
-    pwm1 = map(requestPctPwr, 0, 100, SERVOMIN, SERVOMAX);
-    // Write to PCA9685
-    pca9685.setPWM(SERVO1, 0, pwm1);
-    // Print to serial monitor
-    Serial.printf("Motor 1 = %d\n ", requestPctPwr);
-    delay(SPEED);
-  }
+      // Move Motor 1 from 0 to 180 degrees
+      for (requestPctPwr = 0; requestPctPwr <= 100; requestPctPwr++) {
 
-  // Move Motor 1 from 0 to 180 degrees
-  for (requestPctPwr = 0; requestPctPwr <= 100; requestPctPwr++) {
+        // Determine PWM pulse width
+        pwm1 = map(requestPctPwr, 0, 100, SERVOMIN, SERVOMAX);
+        // Write to PCA9685
+        pca9685.setPWM(SERVO1, 0, pwm1);
+        // Print to serial monitor
+        //Serial.printf("Motor 1 = %d\n ", requestPctPwr);
+        delay(SPEED);
+      }
 
-    // Determine PWM pulse width
-    pwm1 = map(requestPctPwr, 0, 100, SERVOMIN, SERVOMAX);
-    // Write to PCA9685
-    pca9685.setPWM(SERVO1, 0, pwm1);
-    // Print to serial monitor
-    Serial.printf("Motor 1 = %d\n ", requestPctPwr);
-    delay(SPEED);
-  }
-
-  yield();
-
+      yield();
+    }
 }
