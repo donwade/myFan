@@ -6,24 +6,21 @@
 #define ROTATION_STOPPED_uS 2000000
 
 
-#define GREEN_LED       25 // TTGO GPIO25
+#define GREEN_LED           25 // TTGO GPIO25
 #define RPM_INPUT_PIN       34
-
-#define BOOT_MSG1 "simple 433 reciever connected to pin 34"
+#define SCOPE_PIN           35 // avoid GPIO13 SD  !!!! AVOID GPIO2 its for SD CARD AND BOOTPGM!!!
+#define SDA                 21 // default, but I2C address conflict with oled
+#define SCL                 22 // default, but I2C address conflict with oled
 
 volatile bool bTimerRunning;
 
-#define SCOPE_GPIO35 35   // avoid GPIO13 SD  !!!! AVOID GPIO2 its for SD CARD AND BOOTPGM!!!
-
-static QueueHandle_t DIO2Dataqueue = NULL;
-typedef long Amessage;
-
+static QueueHandle_t RPMDataQueue = NULL;
 
 #define HLEN (1<<4)
+typedef long Amessage;
 Amessage rpmHistory[HLEN] ={0};
 
-int requestPctPwr;
-
+int requestedPwrPct;
 
 //------------------------------------------------------------
 // For a connection via I2C using the Arduino Wire include:
@@ -37,6 +34,7 @@ uint8_t horzPositionInPixels = 0;
 // no reset on ttgo for lcd
 SSD1306Wire oled(0x3c, I2C_SDA, I2C_SCL);
 //--------------------------------------------
+
 #include "font.h"
 //static const uint8_t *charSet = Roboto_Mono_14; //Nimbus_Mono_L_Regular_16; // Roboto_Mono_48/32/14/_10;
 static const uint8_t *charSet = DejaVu_Sans_Mono_10 ; // Roboto_Mono_48/32/14/_10;
@@ -78,9 +76,6 @@ int oprintf(uint8_t row, const char * format,...)
 
         buffer[min(ret, maxNumHChars-1)] = 0;  // truncate string if too long for font and display
 
-#if JTAG_PRESENT
-        Serial.printf("%s(%d)(%d vs %d): %s\n", __FUNCTION__, row, ret, maxNumHChars-1, buffer);
-#endif
         oled.drawString(0, vertPositionInPixels, buffer);
 
         //for debug. Write a boarder around the writable text region.
@@ -95,10 +90,8 @@ int oprintf(uint8_t row, const char * format,...)
     else
     {
       Serial.printf("%s, row out of bounds. Range 0..%d\n", __FUNCTION__, maxRowNum);
-      return 0;
     }
 
-    va_end (args);
 
     return ret;
 }
@@ -154,9 +147,9 @@ int setOLED(void)
 
     oled.setTextAlignment(TEXT_ALIGN_LEFT);
     oled.setFont(charSet);
-    oprintf(0,"Built: %s", __DATE__);
-    oprintf(1,"Wifi is:%s", MY_SSID);
-    oprintf(2,"SD log=%s JTAG=%s", SDCARD_LOGGING ? "ON":"OFF", SDCARD_LOGGING ? "OFF":"ON");
+//    oprintf(0,"Built: %s", __DATE__);
+//    oprintf(1,"Wifi is:%s", MY_SSID);
+//    oprintf(2,"SD log=%s JTAG=%s", SDCARD_LOGGING ? "ON":"OFF", SDCARD_LOGGING ? "OFF":"ON");
 
 #if 0
     // test extended character set (now chars at 0x80-0x9F)
@@ -190,7 +183,7 @@ void IRAM_ATTR irqTimedOut()
    bTimerRunning = false;  // needs re-init when spinning starts.
    bStalled = true;
 
-   if (DIO2Dataqueue) xQueueSendToBackFromISR(DIO2Dataqueue, &fanSpeed, NULL);
+   if (RPMDataQueue) xQueueSendToBackFromISR(RPMDataQueue, &fanSpeed, NULL);
 
    digitalWrite(GREEN_LED, 0);
 
@@ -228,10 +221,10 @@ void rpmTask( void * parameter )
 
    unsigned char crlf = 0;
 
-   while( DIO2Dataqueue != 0 )
+   while( RPMDataQueue != 0 )
    {
       // if no response in 2mS then the data burst is finished.
-      if ( xQueueReceive( DIO2Dataqueue, &( timeUsPerRevolution ),  1000 *portTICK_PERIOD_MS ))
+      if ( xQueueReceive( RPMDataQueue, &( timeUsPerRevolution ),  1000 *portTICK_PERIOD_MS ))
       {
           rpmHistory[index] = timeUsPerRevolution;
           index = (++index) & (HLEN-1);
@@ -246,7 +239,7 @@ void rpmTask( void * parameter )
           RPS  = 1000000. / (float) timeUsPerRevolution;  // PRS instant
           RPMA = 1000000. * 60. / (float) avgPeriod;        // RPM average
 
-          Serial.printf("[%4d %6.1f]\t", requestPctPwr, RPMA);  // into RPM
+          Serial.printf("%4d. %6.1f", requestedPwrPct, RPMA);  // into RPM
           //Serial.printf("[%5d %5d]\t", average, timeUsPerRevolution);  // RPS
           crlf++;
           if (1 || !(crlf % 4)) Serial.println();
@@ -268,10 +261,10 @@ void ScopeBlips(int numBlips)
     while (numBlips--)
     {
         spin = SPIN;
-        digitalWrite(SCOPE_GPIO35, 1);
+        digitalWrite(SCOPE_PIN, 1);
         while (spin--);
         spin = SPIN;
-        digitalWrite(SCOPE_GPIO35, 0);
+        digitalWrite(SCOPE_PIN, 0);
         while (spin--);
     }
 }
@@ -306,7 +299,7 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
 
-  // address conflict setOLED();
+  setOLED();
 
   Serial.printf("xxxx\n");
   setupPWM();
@@ -326,7 +319,6 @@ void setup() {
   ScopeBlips(10);
 
   delay(1000);
-  Serial.println(BOOT_MSG1);
 
   setupWiFi();  // setup the time first.
 
@@ -338,17 +330,17 @@ void setup() {
   // take a quick look and see if the scope pin is grounded.
   // if it is grounded, that means erase the SD CARD.
 
-  pinMode(SCOPE_GPIO35,INPUT_PULLUP);
+  pinMode(SCOPE_PIN,INPUT_PULLUP);
 
-  bool scope = digitalRead(SCOPE_GPIO35);
+  bool scope = digitalRead(SCOPE_PIN);
 
-  Serial.printf("checking GPIO%d = %d, %s erasing SD card\n", SCOPE_GPIO35, scope, scope ? "NOT":"");
+  Serial.printf("checking GPIO%d = %d, %s erasing SD card\n", SCOPE_PIN, scope, scope ? "NOT":"");
 
-  if (cpu1Reset != 14 || ERASE_SD_ONPOWERUP || !digitalRead(SCOPE_GPIO35))
+  if (cpu1Reset != 14 || ERASE_SD_ONPOWERUP || !digitalRead(SCOPE_PIN))
   {
     eraseLogFile();
-    Serial.printf("erase done. Waiting for GPIO%d to be released\n", SCOPE_GPIO35);
-    while (!digitalRead(SCOPE_GPIO35)) delay(500);
+    Serial.printf("erase done. Waiting for GPIO%d to be released\n", SCOPE_PIN);
+    while (!digitalRead(SCOPE_PIN)) delay(500);
     delay(2000);
   }
 
@@ -358,11 +350,11 @@ void setup() {
 
 
   // now SCOPE_GPIO is an output for the scope.
-  pinMode(SCOPE_GPIO35,OUTPUT);
+  pinMode(SCOPE_PIN,OUTPUT);
 
   setupDeadAirTimer();
 
-  DIO2Dataqueue = xQueueCreate(200, sizeof(Amessage));
+  RPMDataQueue = xQueueCreate(200, sizeof(Amessage));
 
   pinMode(RPM_INPUT_PIN, INPUT);
   attachInterrupt(RPM_INPUT_PIN, irq_handler, FALLING); // duty cycle varies, measure freq
@@ -415,7 +407,7 @@ void irq_handler(void)
     // set rotation timer back to zero.
     timerWrite(hRotationStoppedTimer, 0); //set count to zero.
 
-    if (DIO2Dataqueue && !bStalled) xQueueSendToBackFromISR(DIO2Dataqueue, &xdiff, NULL);
+    if (RPMDataQueue && !bStalled) xQueueSendToBackFromISR(RPMDataQueue, &xdiff, NULL);
     bStalled = false;
 
 }
@@ -449,13 +441,13 @@ Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(0x40);
 // Range from 0 to 4095
 // This determines the pulse width
 
-#define SERVOMIN  80  // Minimum value
-#define SERVOMAX  4000  //600  // Maximum value
+#define SERVOMIN  1       // Minimum value
+#define SERVOMAX  4094    // Maximum value
 
 // Define servo motor connections (expand as required)
 #define SERVO1  15  //Servo Motor 1 on connector 12
 
-#define SPEED 3000  //time in ms b/n steps.
+#define SPEED 750  //time in ms b/n steps.
 
 void setupPWM() {
 
@@ -469,7 +461,7 @@ void setupPWM() {
   pca9685.begin();
 
   // Set PWM Frequency to x Hz
-  pca9685.setPWMFreq(3500);
+  pca9685.setPWMFreq(1000);
 
 }
 
@@ -482,10 +474,10 @@ void controlTask( void * parameter )
       int pwm1;
 
       // Move Motor 1 from 180 to 0 degrees
-      for (requestPctPwr = 100; requestPctPwr >= 0; requestPctPwr--) {
+      for (requestedPwrPct = 100; requestedPwrPct >= 0; requestedPwrPct--) {
 
         // Determine PWM pulse width
-        pwm1 = map(requestPctPwr, 0, 100, SERVOMIN, SERVOMAX);
+        pwm1 = map(requestedPwrPct, 0, 100, SERVOMIN, SERVOMAX);
         // Write to PCA9685
         pca9685.setPWM(SERVO1, 0, pwm1);
         // Print to serial monitor
@@ -494,10 +486,10 @@ void controlTask( void * parameter )
       }
 
       // Move Motor 1 from 0 to 180 degrees
-      for (requestPctPwr = 0; requestPctPwr <= 100; requestPctPwr++) {
+      for (requestedPwrPct = 0; requestedPwrPct <= 100; requestedPwrPct++) {
 
         // Determine PWM pulse width
-        pwm1 = map(requestPctPwr, 0, 100, SERVOMIN, SERVOMAX);
+        pwm1 = map(requestedPwrPct, 0, 100, SERVOMIN, SERVOMAX);
         // Write to PCA9685
         pca9685.setPWM(SERVO1, 0, pwm1);
         // Print to serial monitor
