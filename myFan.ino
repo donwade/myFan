@@ -17,10 +17,18 @@ volatile bool bTimerRunning;
 static QueueHandle_t RPMDataQueue = NULL;
 
 #define HLEN (1<<4)
-typedef long Amessage;
-Amessage rpmHistory[HLEN] ={0};
+typedef struct MESSAGE
+{
+    long hiTime;
+    long loTime;
+};
+
+long rpmHistory[HLEN] ={0};
 
 int requestedPwrPct;
+
+volatile unsigned int currentRPS;
+volatile unsigned int currentRPM;
 
 //------------------------------------------------------------
 // For a connection via I2C using the Arduino Wire include:
@@ -174,7 +182,10 @@ boolean bStalled = false;
 
 void IRAM_ATTR irqTimedOut()
 {
-   Amessage fanSpeed = -1;  // indicate the fan stopped turning
+   MESSAGE ipc;
+   ipc.hiTime = -1;
+   ipc.loTime = -1;
+
    memset(rpmHistory, 0, sizeof(rpmHistory));
 
    portENTER_CRITICAL_ISR(&criticalSection);
@@ -183,7 +194,7 @@ void IRAM_ATTR irqTimedOut()
    bTimerRunning = false;  // needs re-init when spinning starts.
    bStalled = true;
 
-   if (RPMDataQueue) xQueueSendToBackFromISR(RPMDataQueue, &fanSpeed, NULL);
+   if (RPMDataQueue) xQueueSendToBackFromISR(RPMDataQueue, &ipc, NULL);
 
    digitalWrite(GREEN_LED, 0);
 
@@ -210,23 +221,21 @@ void setupDeadAirTimer()
 //-------------------------------------------------------------
 void rpmTask( void * parameter )
 {
-   Amessage timeUsPerRevolution;
+   MESSAGE ipc;
    Serial.printf("%s task running\n", __FUNCTION__);
-   Amessage avgPeriod;
+   long avgPeriod;
    int index = 0;
-
-
-   float RPS;
-   float RPMA;
 
    unsigned char crlf = 0;
 
    while( RPMDataQueue != 0 )
    {
       // if no response in 2mS then the data burst is finished.
-      if ( xQueueReceive( RPMDataQueue, &( timeUsPerRevolution ),  1000 *portTICK_PERIOD_MS ))
+      if ( xQueueReceive( RPMDataQueue, &ipc,  1000 *portTICK_PERIOD_MS ))
       {
-          rpmHistory[index] = timeUsPerRevolution;
+          unsigned long speedinUs;
+          speedinUs = ipc.loTime + ipc.hiTime;
+          rpmHistory[index] = speedinUs;
           index = (++index) & (HLEN-1);
 
           avgPeriod = 0;
@@ -236,16 +245,18 @@ void rpmTask( void * parameter )
           }
           avgPeriod /= HLEN;
 
-          RPS  = 1000000. / (float) timeUsPerRevolution;  // PRS instant
-          RPMA = 1000000. * 60. / (float) avgPeriod;        // RPM average
+          currentRPS  = (unsigned int)(1000000. / (float) speedinUs);       // PRS instant
+          currentRPM = (unsigned int)(1000000. * 60. / (float) avgPeriod);  // RPM average
 
-          Serial.printf("%4d. %6.1f", requestedPwrPct, RPMA);  // into RPM
+          //Serial.printf("%4d %5d %5d  %5d", requestedPwrPct, ipc.loTime, ipc.hiTime,  currentRPM);  // into RPM
           //Serial.printf("[%5d %5d]\t", average, timeUsPerRevolution);  // RPS
-          crlf++;
-          if (1 || !(crlf % 4)) Serial.println();
+          //crlf++;
+          //if (1 || !(crlf % 4)) Serial.println();
       }
       else
-          Serial.printf(".");
+      {
+          //Serial.printf(".");
+      }
 
       yield();
    }
@@ -299,7 +310,7 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
 
-  setOLED();
+  //setOLED(); DO NOT ENABLE. IT FREEZES THE CORE.
 
   Serial.printf("xxxx\n");
   setupPWM();
@@ -320,7 +331,7 @@ void setup() {
 
   delay(1000);
 
-  setupWiFi();  // setup the time first.
+  setupWiFi();  // setup the time first. what a mess.
 
 #if !JTAG_PRESENT
   setupFS();    // fs needs time from wifi.
@@ -354,45 +365,68 @@ void setup() {
 
   setupDeadAirTimer();
 
-  RPMDataQueue = xQueueCreate(200, sizeof(Amessage));
+  RPMDataQueue = xQueueCreate(200, sizeof(MESSAGE));
 
   pinMode(RPM_INPUT_PIN, INPUT);
-  attachInterrupt(RPM_INPUT_PIN, irq_handler, FALLING); // duty cycle varies, measure freq
+
 
    xTaskCreatePinnedToCore(
                   rpmTask,       /* Function to implement the task */
                   "rpmTask",      /* Name of the task */
-                  10000,          /* Stack size in words */
+                  30000,          /* Stack size in words */
                   (void *)99,     /* Task input parameter */
                   0,              /* Priority of the task */
                   NULL,           /* Task handle. */
-                  1);             /* Core where the task should run */
+                  0);             /* Core where the task should run */
 
     xTaskCreatePinnedToCore(
                    controlTask,   /* Function to implement the task */
                    "controlTask",  /* Name of the task */
-                   10000,          /* Stack size in words */
+                   30000,          /* Stack size in words */
                    (void *)99,     /* Task input parameter */
                    0,              /* Priority of the task */
                    NULL,           /* Task handle. */
-                   1);             /* Core where the task should run */
+                   0);             /* Core where the task should run */
 
     delay(3000);
 
+    attachInterrupt(RPM_INPUT_PIN, irq_handler, CHANGE); // duty cycle varies, measure freq
+
 }
+static unsigned long lastLoTime = 1;
+static unsigned long lastHiTime = 1;
 
 //---------------------------------------
 void irq_handler(void)
 {
+    MESSAGE ipc;
     static unsigned long lastIrqTime;
+
+    long period;
     unsigned long now;
-    Amessage xdiff;
+    long diffTime;
+    long duty;
 
     now = micros();
-    xdiff = now - lastIrqTime;
+    diffTime = now - lastIrqTime;
     lastIrqTime = now;
 
-    //Amessage xnow = micros(); //timerAlarmRead(hRotationStoppedTimer);
+    bool lastState = !digitalRead(RPM_INPUT_PIN);
+
+    // duty cycle should be close to 50%, if not its either starting up or coming to a stop.
+    if (lastState)
+    {
+        lastHiTime = diffTime;
+    }
+    else
+    {
+        lastLoTime = diffTime;
+    }
+
+    period = lastLoTime + lastHiTime;
+
+    ipc.hiTime = lastHiTime;
+    ipc.loTime = lastLoTime;
 
     if (!bTimerRunning)
     {
@@ -407,7 +441,9 @@ void irq_handler(void)
     // set rotation timer back to zero.
     timerWrite(hRotationStoppedTimer, 0); //set count to zero.
 
-    if (RPMDataQueue && !bStalled) xQueueSendToBackFromISR(RPMDataQueue, &xdiff, NULL);
+    //if (RPMDataQueue && !bStalled) xQueueSendToBackFromISR(RPMDataQueue, &period, NULL);
+    if (RPMDataQueue) xQueueSendToBackFromISR(RPMDataQueue, &ipc, NULL);
+
     bStalled = false;
 
 }
@@ -442,7 +478,7 @@ Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(0x40);
 // This determines the pulse width
 
 #define SERVOMIN  1       // Minimum value
-#define SERVOMAX  4094    // Maximum value
+#define SERVOMAX  4090     // Maximum value
 
 // Define servo motor connections (expand as required)
 #define SERVO1  15  //Servo Motor 1 on connector 12
@@ -472,19 +508,9 @@ void controlTask( void * parameter )
     while (1)
     {
       int pwm1;
+      unsigned int lastRPM;
 
-      // Move Motor 1 from 180 to 0 degrees
-      for (requestedPwrPct = 100; requestedPwrPct >= 0; requestedPwrPct--) {
-
-        // Determine PWM pulse width
-        pwm1 = map(requestedPwrPct, 0, 100, SERVOMIN, SERVOMAX);
-        // Write to PCA9685
-        pca9685.setPWM(SERVO1, 0, pwm1);
-        // Print to serial monitor
-        //Serial.printf("Motor 1 = %d\n ", requestPctPwr);
-        delay(SPEED);
-      }
-
+#if 0
       // Move Motor 1 from 0 to 180 degrees
       for (requestedPwrPct = 0; requestedPwrPct <= 100; requestedPwrPct++) {
 
@@ -493,10 +519,42 @@ void controlTask( void * parameter )
         // Write to PCA9685
         pca9685.setPWM(SERVO1, 0, pwm1);
         // Print to serial monitor
+        Serial.printf("Motor + = %d (%d)\n ", requestedPwrPct, pwm1);
         //Serial.printf("Motor 1 = %d\n ", requestPctPwr);
         delay(SPEED);
       }
 
-      yield();
+      Serial.printf("fast it can go\n");
+      delay(10000);
+#endif
+
+
+      // Move Motor 1 from 180 to 0 degrees
+      // don't do 100% it never settles.
+
+      for (requestedPwrPct = 98; requestedPwrPct >= 0; requestedPwrPct--) {
+
+        lastRPM = 0.0;
+        // Determine PWM pulse width
+        pwm1 = map(requestedPwrPct, 0, 100, SERVOMIN, SERVOMAX);
+        // Write to PCA9685
+        pca9685.setPWM(SERVO1, 0, pwm1);
+        // Print to serial monitor
+        Serial.printf("Motor 1 - %d (h/w = %d)\n ", requestedPwrPct, pwm1);
+
+        delay(SPEED);
+        if (currentRPM == 0) continue;
+
+        while (lastRPM != currentRPM)
+        {
+            lastRPM = currentRPM;
+            delay(SPEED);
+            Serial.printf("last=%d current=%d\n", lastRPM, currentRPM);
+        }
+        Serial.printf("Motor 1 - %d speed = %5d vs %5d\n ", requestedPwrPct, currentRPM, lastRPM);
+      }
+
+      Serial.printf("as slow as it can go\n");
+      delay(10000);
     }
 }
