@@ -530,11 +530,12 @@ void controlTask( void * parameter )
 
 
       // Move Motor 1 from 180 to 0 degrees
-      // don't do 100% it never settles.
+      // don't do above 96% it never settles.
 
-      for (requestedPwrPct = 98; requestedPwrPct >= 0; requestedPwrPct--) {
+      for (requestedPwrPct = 96; requestedPwrPct >= 0; requestedPwrPct--) {
 
         lastRPM = 0.0;
+        unsigned int tries = 0;
         // Determine PWM pulse width
         pwm1 = map(requestedPwrPct, 0, 100, SERVOMIN, SERVOMAX);
         // Write to PCA9685
@@ -547,11 +548,13 @@ void controlTask( void * parameter )
 
         while (lastRPM != currentRPM)
         {
+            tries++;
             lastRPM = currentRPM;
             delay(SPEED);
-            Serial.printf("last=%d current=%d\n", lastRPM, currentRPM);
+            //Serial.printf("last=%d current=%d\n", lastRPM, currentRPM);
         }
-        Serial.printf("Motor 1 - %d speed = %5d vs %5d\n ", requestedPwrPct, currentRPM, lastRPM);
+        Serial.printf("Motor 1 - %d speed = %5d vs %5d tries =%d\n ",
+            requestedPwrPct, currentRPM, lastRPM, tries);
       }
 
       Serial.printf("as slow as it can go\n");
