@@ -1,4 +1,19 @@
 #include <rom/rtc.h>  // retrieve reset code interface.
+
+// Include Wire Library for I2C
+#include <Wire.h>
+
+// Include Adafruit PCA9685 Servo Library
+#include <Adafruit_PWMServoDriver.h>
+
+// Define servo motor connections (expand as required)
+#define SERVO1  15  //Servo Motor 0 on connector 15
+#define SERVO2  14  //Servo Motor 1 on connector 14
+
+uint8_t servo[2] = { SERVO1, SERVO2};
+
+// Creat object to represent PCA9685 at default I2C address
+
 #include "Protos.h"
 
 #define TTGO
@@ -7,14 +22,14 @@
 
 
 #define GREEN_LED           25 // TTGO GPIO25
-#define RPM_INPUT_PIN       34
+
+#define RPM_FAN1_PIN        34
+#define RPM_FAN2_PIN        35
+
 #define SCOPE_PIN           35 // avoid GPIO13 SD  !!!! AVOID GPIO2 its for SD CARD AND BOOTPGM!!!
 #define SDA                 21 // default, but I2C address conflict with oled
 #define SCL                 22 // default, but I2C address conflict with oled
 
-volatile bool bTimerRunning;
-
-static QueueHandle_t RPMDataQueue = NULL;
 
 #define HLEN (1<<4)
 typedef struct MESSAGE
@@ -23,12 +38,16 @@ typedef struct MESSAGE
     long loTime;
 };
 
-long rpmHistory[HLEN] ={0};
+long rpmHistory[2][HLEN];
 
-int requestedPwrPct;
+int requestedPwrPct[2];
 
-volatile unsigned int currentRPS;
-volatile unsigned int currentRPM;
+volatile unsigned int currentRPS[2];
+volatile unsigned int currentRPM[2];
+volatile bool bTimerRunning[2];
+static QueueHandle_t RPMDataQueue[2] = {NULL, NULL};
+
+Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(0x40);
 
 //------------------------------------------------------------
 // For a connection via I2C using the Arduino Wire include:
@@ -172,33 +191,44 @@ int setOLED(void)
 }
 //------------------------------------------------------------
 
-volatile int timerCntISR;    // Triggervolatile int bTimerRunning;
+volatile int timerCntISR;    // Triggervolatile int bTimerRunning[fanNum];
 
-hw_timer_t * hRotationStoppedTimer = NULL;
+hw_timer_t * hRotationStoppedTimer[2] = {NULL, NULL};
 
 portMUX_TYPE criticalSection = portMUX_INITIALIZER_UNLOCKED;
 
-boolean bStalled = false;
+boolean bStalled[2];
+//-------------------------------------------------------------
 
-void IRAM_ATTR irqTimedOut()
+void IRAM_ATTR irqTimedOut(uint8_t fanNum)
 {
    MESSAGE ipc;
    ipc.hiTime = -1;
    ipc.loTime = -1;
 
-   memset(rpmHistory, 0, sizeof(rpmHistory));
+   memset(rpmHistory[fanNum], 0, sizeof(rpmHistory[fanNum]));
 
    portENTER_CRITICAL_ISR(&criticalSection);
    timerCntISR++;
 
-   bTimerRunning = false;  // needs re-init when spinning starts.
-   bStalled = true;
+   bTimerRunning[fanNum] = false;  // needs re-init when spinning starts.
+   bStalled[fanNum] = true;
 
-   if (RPMDataQueue) xQueueSendToBackFromISR(RPMDataQueue, &ipc, NULL);
+   if (RPMDataQueue[fanNum]) xQueueSendToBackFromISR(RPMDataQueue[fanNum], &ipc, NULL);
 
    digitalWrite(GREEN_LED, 0);
 
    portEXIT_CRITICAL_ISR(&criticalSection);
+}
+
+void IRAM_ATTR irq0TimedOut()
+{
+    irqTimedOut(0);
+}
+
+void IRAM_ATTR irq1TimedOut()
+{
+    irqTimedOut(1);
 }
 
 //-------------------------------------------------------------
@@ -206,49 +236,57 @@ void IRAM_ATTR irqTimedOut()
 void setupDeadAirTimer()
 {
 
-    hRotationStoppedTimer = timerBegin(0, 80, true);  // 80Mhz/80 = 1Mhz tick rate
-    timerAttachInterrupt(hRotationStoppedTimer, &irqTimedOut, true);
+    hRotationStoppedTimer[0] = timerBegin(0, 80, true);  // 80Mhz/80 = 1Mhz tick rate
+    hRotationStoppedTimer[1] = timerBegin(1, 80, true);  // 80Mhz/80 = 1Mhz tick rate
+
+    timerAttachInterrupt(hRotationStoppedTimer[0], &irq0TimedOut, true);
+    timerAttachInterrupt(hRotationStoppedTimer[1], &irq1TimedOut, true);
 
     // Sets an alarm to sound every X mS
-    timerAlarmWrite(hRotationStoppedTimer, ROTATION_STOPPED_uS, false);  // no auto reload
+    timerAlarmWrite(hRotationStoppedTimer[0], ROTATION_STOPPED_uS, false);  // no auto reload
+    timerAlarmWrite(hRotationStoppedTimer[1], ROTATION_STOPPED_uS, false);  // no auto reload
 
     //timerSetAutoReload(silenceTimer, false);  // one shot?
 
     // wait til ready.
-    timerAlarmEnable(hRotationStoppedTimer);
+    timerAlarmEnable(hRotationStoppedTimer[0]);
+    timerAlarmEnable(hRotationStoppedTimer[1]);
 
 }
 //-------------------------------------------------------------
 void rpmTask( void * parameter )
 {
+
    MESSAGE ipc;
-   Serial.printf("%s task running\n", __FUNCTION__);
    long avgPeriod;
    int index = 0;
-
    unsigned char crlf = 0;
+   uint32_t fanNum = (uint32_t) parameter;
 
-   while( RPMDataQueue != 0 )
+   Serial.printf("%s task running fan %d\n", __FUNCTION__, fanNum);
+
+
+   while( RPMDataQueue[fanNum] != 0 )
    {
       // if no response in 2mS then the data burst is finished.
-      if ( xQueueReceive( RPMDataQueue, &ipc,  1000 *portTICK_PERIOD_MS ))
+      if ( xQueueReceive( RPMDataQueue[fanNum], &ipc,  1000 *portTICK_PERIOD_MS ))
       {
           unsigned long speedinUs;
           speedinUs = ipc.loTime + ipc.hiTime;
-          rpmHistory[index] = speedinUs;
+          rpmHistory[fanNum][index] = speedinUs;
           index = (++index) & (HLEN-1);
 
           avgPeriod = 0;
           for (int i = 0; i < HLEN; i++)
           {
-            avgPeriod += rpmHistory[i];
+            avgPeriod += rpmHistory[fanNum][i];
           }
           avgPeriod /= HLEN;
 
-          currentRPS  = (unsigned int)(1000000. / (float) speedinUs);       // PRS instant
-          currentRPM = (unsigned int)(1000000. * 60. / (float) avgPeriod);  // RPM average
+          currentRPS[fanNum]  = (unsigned int)(1000000. / (float) speedinUs);       // PRS instant
+          currentRPM[fanNum] = (unsigned int)(1000000. * 60. / (float) avgPeriod);  // RPM average
 
-          //Serial.printf("%4d %5d %5d  %5d", requestedPwrPct, ipc.loTime, ipc.hiTime,  currentRPM);  // into RPM
+          //Serial.printf("%4d %5d %5d  %5d", requestedPwrPct, ipc.loTime, ipc.hiTime,  currentRPM[0]);  // into RPM
           //Serial.printf("[%5d %5d]\t", average, timeUsPerRevolution);  // RPS
           //crlf++;
           //if (1 || !(crlf % 4)) Serial.println();
@@ -365,42 +403,72 @@ void setup() {
 
   setupDeadAirTimer();
 
-  RPMDataQueue = xQueueCreate(200, sizeof(MESSAGE));
+  RPMDataQueue[0] = xQueueCreate(20, sizeof(MESSAGE));
+  RPMDataQueue[1] = xQueueCreate(20, sizeof(MESSAGE));
 
-  pinMode(RPM_INPUT_PIN, INPUT);
+  pinMode(RPM_FAN1_PIN, INPUT);
+  pinMode(RPM_FAN2_PIN, INPUT);
 
 
    xTaskCreatePinnedToCore(
                   rpmTask,       /* Function to implement the task */
                   "rpmTask",      /* Name of the task */
                   30000,          /* Stack size in words */
-                  (void *)99,     /* Task input parameter */
+                  (void *)0,      /* Fan number 0 Task */
                   0,              /* Priority of the task */
                   NULL,           /* Task handle. */
                   0);             /* Core where the task should run */
 
     xTaskCreatePinnedToCore(
-                   controlTask,   /* Function to implement the task */
-                   "controlTask",  /* Name of the task */
+                   rpmTask,       /* Function to implement the task */
+                   "rpmTask",      /* Name of the task */
                    30000,          /* Stack size in words */
-                   (void *)99,     /* Task input parameter */
+                   (void *)1,      /* Fan number 1 Task */
                    0,              /* Priority of the task */
                    NULL,           /* Task handle. */
                    0);             /* Core where the task should run */
 
+
+    // Write to PCA9685
+
+    pca9685.setPWM(servo[0], 0, 0 ); // all fans off
+    pca9685.setPWM(servo[1], 0, 0 );
+
+#if 0
+    xTaskCreatePinnedToCore(
+                   controlTask,   /* Function to implement the task */
+                   "controlTask",  /* Name of the task */
+                   30000,          /* Stack size in words */
+                   (void *)0,      /* fan 0 */
+                   0,              /* Priority of the task */
+                   NULL,           /* Task handle. */
+                   0);             /* Core where the task should run */
+#else
+    xTaskCreatePinnedToCore(
+                   controlTask,   /* Function to implement the task */
+                   "controlTask",  /* Name of the task */
+                   30000,          /* Stack size in words */
+                   (void *)1,      /* fan 1 */
+                   0,              /* Priority of the task */
+                   NULL,           /* Task handle. */
+                   0);             /* Core where the task should run */
+#endif
+
     delay(3000);
 
-    attachInterrupt(RPM_INPUT_PIN, irq_handler, CHANGE); // duty cycle varies, measure freq
+    attachInterrupt(RPM_FAN1_PIN, irq_handler0, CHANGE);
+    attachInterrupt(RPM_FAN2_PIN, irq_handler1, CHANGE);
 
 }
-static unsigned long lastLoTime = 1;
-static unsigned long lastHiTime = 1;
+
+static unsigned long lastLoTime[2] = {1,1};
+static unsigned long lastHiTime[2] = {1,1};
+static unsigned long lastIrqTime[2];
 
 //---------------------------------------
-void irq_handler(void)
+void irq_handler(unsigned fanNum)
 {
     MESSAGE ipc;
-    static unsigned long lastIrqTime;
 
     long period;
     unsigned long now;
@@ -408,44 +476,54 @@ void irq_handler(void)
     long duty;
 
     now = micros();
-    diffTime = now - lastIrqTime;
-    lastIrqTime = now;
+    diffTime = now - lastIrqTime[fanNum];
+    lastIrqTime[fanNum] = now;
 
-    bool lastState = !digitalRead(RPM_INPUT_PIN);
+    bool lastState = !digitalRead(RPM_FAN1_PIN);
 
     // duty cycle should be close to 50%, if not its either starting up or coming to a stop.
     if (lastState)
     {
-        lastHiTime = diffTime;
+        lastHiTime[fanNum] = diffTime;
     }
     else
     {
-        lastLoTime = diffTime;
+        lastLoTime[fanNum] = diffTime;
     }
 
-    period = lastLoTime + lastHiTime;
+    period = lastLoTime[fanNum] + lastHiTime[fanNum];
 
-    ipc.hiTime = lastHiTime;
-    ipc.loTime = lastLoTime;
+    ipc.hiTime = lastHiTime[fanNum];
+    ipc.loTime = lastLoTime[fanNum];
 
-    if (!bTimerRunning)
+    if (!bTimerRunning[fanNum])
     {
         //rearm the timer that monitors the fan not turning.
 
-        bTimerRunning = true;
-        timerAlarmWrite(hRotationStoppedTimer, ROTATION_STOPPED_uS , false);  // reload threshold, no auto reload
-        timerAlarmEnable(hRotationStoppedTimer);
+        bTimerRunning[fanNum] = true;
+        timerAlarmWrite(hRotationStoppedTimer[fanNum], ROTATION_STOPPED_uS , false);  // reload threshold, no auto reload
+        timerAlarmEnable(hRotationStoppedTimer[fanNum]);
         digitalWrite(GREEN_LED,1);
     }
 
     // set rotation timer back to zero.
-    timerWrite(hRotationStoppedTimer, 0); //set count to zero.
+    timerWrite(hRotationStoppedTimer[fanNum], 0); //set count to zero.
 
-    //if (RPMDataQueue && !bStalled) xQueueSendToBackFromISR(RPMDataQueue, &period, NULL);
-    if (RPMDataQueue) xQueueSendToBackFromISR(RPMDataQueue, &ipc, NULL);
+    //if (RPMDataQueue[0] && !bStalled[fanNum]) xQueueSendToBackFromISR(RPMDataQueue[0], &period, NULL);
+    if (RPMDataQueue[fanNum]) xQueueSendToBackFromISR(RPMDataQueue[fanNum], &ipc, NULL);
 
-    bStalled = false;
+    bStalled[fanNum] = false;
 
+}
+
+void irq_handler0(void)
+{
+    irq_handler(0);
+}
+
+void irq_handler1(void)
+{
+    irq_handler(1);
 }
 
 void loop()
@@ -464,24 +542,12 @@ void loop()
   https://dronebotworkshop.com
 */
 
-// Include Wire Library for I2C
-#include <Wire.h>
-
-// Include Adafruit PCA9685 Servo Library
-#include <Adafruit_PWMServoDriver.h>
-
-// Creat object to represent PCA9685 at default I2C address
-Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(0x40);
-
 // Define maximum and minimum number of "ticks" for the servo motors
 // Range from 0 to 4095
 // This determines the pulse width
 
 #define SERVOMIN  1       // Minimum value
 #define SERVOMAX  4090     // Maximum value
-
-// Define servo motor connections (expand as required)
-#define SERVO1  15  //Servo Motor 1 on connector 12
 
 #define SPEED 750  //time in ms b/n steps.
 
@@ -504,60 +570,46 @@ void setupPWM() {
 //-------------------------------------------------------------
 void controlTask( void * parameter )
 {
-    Serial.printf("%s started\n", __FUNCTION__);
+    uint32_t fanNum = (uint32_t) parameter;
+    Serial.printf("%s started fan %d\n", __FUNCTION__, fanNum);
+
     while (1)
     {
-      int pwm1;
+      int hwPWMval;
       unsigned int lastRPM;
 
-#if 0
-      // Move Motor 1 from 0 to 180 degrees
-      for (requestedPwrPct = 0; requestedPwrPct <= 100; requestedPwrPct++) {
-
-        // Determine PWM pulse width
-        pwm1 = map(requestedPwrPct, 0, 100, SERVOMIN, SERVOMAX);
-        // Write to PCA9685
-        pca9685.setPWM(SERVO1, 0, pwm1);
-        // Print to serial monitor
-        Serial.printf("Motor + = %d (%d)\n ", requestedPwrPct, pwm1);
-        //Serial.printf("Motor 1 = %d\n ", requestPctPwr);
-        delay(SPEED);
-      }
-
-      Serial.printf("fast it can go\n");
-      delay(10000);
-#endif
-
-
-      // Move Motor 1 from 180 to 0 degrees
       // don't do above 96% it never settles.
 
-      for (requestedPwrPct = 96; requestedPwrPct >= 0; requestedPwrPct--) {
+      for (requestedPwrPct[fanNum] = 96; requestedPwrPct[fanNum] >= 0; requestedPwrPct[fanNum]--) {
 
         lastRPM = 0.0;
         unsigned int tries = 0;
+
         // Determine PWM pulse width
-        pwm1 = map(requestedPwrPct, 0, 100, SERVOMIN, SERVOMAX);
+        hwPWMval = map(requestedPwrPct[fanNum], 0, 100, SERVOMIN, SERVOMAX);
+
         // Write to PCA9685
-        pca9685.setPWM(SERVO1, 0, pwm1);
+        pca9685.setPWM(servo[fanNum], 0, hwPWMval);
+
         // Print to serial monitor
-        Serial.printf("Motor 1 - %d (h/w = %d)\n ", requestedPwrPct, pwm1);
+        Serial.printf("Motor %d - %d (h/w = %d)\n ", fanNum, requestedPwrPct[fanNum], hwPWMval);
 
         delay(SPEED);
-        if (currentRPM == 0) continue;
+        if (currentRPM[fanNum] == 0) continue;
 
-        while (lastRPM != currentRPM)
+        while (lastRPM != currentRPM[fanNum])
         {
             tries++;
-            lastRPM = currentRPM;
+            lastRPM = currentRPM[fanNum];
             delay(SPEED);
-            //Serial.printf("last=%d current=%d\n", lastRPM, currentRPM);
+            //Serial.printf("fan=%d last=%d current=%d\n", fanNum, lastRPM, currentRPM[0]);
         }
-        Serial.printf("Motor 1 - %d speed = %5d vs %5d tries =%d\n ",
-            requestedPwrPct, currentRPM, lastRPM, tries);
+        Serial.printf("Motor %d - %d speed = %5d vs %5d tries =%d\n ",
+            fanNum, requestedPwrPct[fanNum], currentRPM[fanNum], lastRPM, tries);
       }
 
-      Serial.printf("as slow as it can go\n");
+      Serial.printf("fan %d as slow as it can go\n", fanNum);
       delay(10000);
     }
 }
+
