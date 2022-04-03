@@ -17,30 +17,24 @@ uint8_t servo[2] = { SERVO1, SERVO2};
 #include "Protos.h"
 
 //-----------------------------------------------------------
-#include "DHT.h"
-
-//// repurposed  #define GREEN_LED 25GO GPIO25
-#define DHT_DATA_PIN 25    // Digital pin connected to the DHT sensor
-
-// Uncomment whatever type you're using!
-#define DHTTYPE DHT11      // DHT 11
-//#define DHTTYPE DHT22    // DHT 22  (AM2302), AM2321
-//#define DHTTYPE DHT21    // DHT 21 (AM2301)
-
+float heatIndex, dewPoint, comfortRatio;
+float temperature;
+float humidity;
+byte perception;
+char *pcPerception = "TBD";
+char *pcComfortString = "TBD";
 //-----------------------------------------------------------
 
 #define TTGO
 
 #define ROTATION_STOPPED_uS 2000000
 
-
-
 #define RPM_FAN1_PIN        34
 #define RPM_FAN2_PIN        35
 
 #define SCOPE_PIN           35 // avoid GPIO13 SD  !!!! AVOID GPIO2 its for SD CARD AND BOOTPGM!!!
-#define SDA                 21 // default, but I2C address conflict with oled
-#define SCL                 22 // default, but I2C address conflict with oled
+#define SDA                 21 // default but I2C address conflict with oled
+#define SCL                 22 // default but I2C address conflict with oled
 
 
 #define HLEN (1<<4)
@@ -60,7 +54,6 @@ volatile bool bTimerRunning[2];
 static QueueHandle_t RPMDataQueue[2] = {NULL, NULL};
 
 Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(0x40);
-DHT dht(DHT_DATA_PIN, DHTTYPE);
 
 //------------------------------------------------------------
 
@@ -239,7 +232,7 @@ void setup() {
   LINE
   //setupWiFi();  // setup the time first. what a mess.
   delay(1000);
-  dht.begin();
+  setupDHT();
   setupPWM();
 
 
@@ -304,17 +297,6 @@ void setup() {
     // Write to PCA9685
 #endif
 
-#if 1
-        xTaskCreatePinnedToCore(
-                       tempHumidityTask,       /* Function to implement the task */
-                       "tempHumidityTask",       /* Name of the task */
-                       30000,                    /* Stack size in words */
-                       (void *)1,                /* pass in */
-                       0,                        /* Priority of the task */
-                       NULL,                     /* Task handle. */
-                       1);                       /* Core where the task should run */
-#endif
-    delay(100);
     pca9685.setPWM(servo[0], 0, 0 ); // all fans off
     pca9685.setPWM(servo[1], 0, 0 );
 
@@ -345,8 +327,6 @@ void setup() {
     attachInterrupt(RPM_FAN2_PIN, irq_handler1, CHANGE);
     setupDeadAirTimer();
 
-    readDHT(__FUNCTION__);
-    delay(3000);
     Serial.println("setup done");
 }
 
@@ -418,7 +398,7 @@ void irq_handler1(void)
 void loop()
 {
    delay(6500);
-   readDHT(__FUNCTION__);
+   loopDHT();
    //vTaskSuspend(NULL);
 }
 //------------------------------------------------------------------------------
@@ -504,54 +484,237 @@ void controlTask( void * parameter )
     }
 }
 
-void readDHT(const char *msg)
+//--------------------------------------------------------------------------------
+#include "DHTesp.h" // Click here to get the library: http://librarymanager/All#DHTesp
+#include <Ticker.h>
+
+
+#ifndef ESP32
+#pragma message(THIS EXAMPLE IS FOR ESP32 ONLY!)
+#error Select ESP32 board.
+#endif
+
+/**************************************************************/
+/* Example how to read DHT sensors from an ESP32 using multi- */
+/* tasking.                                                   */
+/* This example depends on the Ticker library to wake up      */
+/* the task every X  seconds                                  */
+/**************************************************************/
+
+DHTesp dht;
+
+void DHTtask(void *pvParameters);
+bool getTemperature();
+void DHTtimerCallback();
+
+/** Task handle for the light value read task */
+TaskHandle_t DHTtaskHandle = NULL;
+
+/** Ticker for temperature reading */
+Ticker DHTtimer;
+
+/** Comfort profile */
+ComfortState cf;
+
+/** Flag if task should run */
+bool bLoopingDHT = false;
+
+/** Pin number for DHT11 data pin */
+int dhtPin = 13;
+
+//-------------------------------------------------------------
+/**
+ * initTemp
+ * Setup DHT library
+ * Setup task and timer for repeated measurement
+ * @return bool
+ *    true if task and timer are started
+ *    false if task or timer couldn't be started
+ */
+bool initDHT()
 {
-    // Reading temperature or humidity takes about 250 milliseconds!
-    // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
-    float h = dht.readHumidity();
-    // Read temperature as Celsius (the default)
-    float t = dht.readTemperature();
-    // Read temperature as Fahrenheit (isFahrenheit = true)
-    float f = dht.readTemperature(true);
+  byte resultValue = 0;
+  // Initialize temperature sensor
+  Serial.printf("%s init\n", __FUNCTION__);
 
-    Serial.printf("from msg %s on core %d ", msg, xPortGetCoreID());
+  dht.setup(dhtPin, DHTesp::DHT11);
 
-    // Check if any reads failed and exit early (to try again).
-    if (isnan(h) || isnan(t) || isnan(f))
+  // Start task to get temperature
+  xTaskCreatePinnedToCore(
+      DHTtask,                       /* Function to implement the task */
+      "DHTtask ",                     /* Name of the task */
+      4000,                           /* Stack size in words */
+      NULL,                           /* Task input parameter */
+      5,                              /* Priority of the task */
+      &DHTtaskHandle,                /* Task handle. */
+      1);                             /* Core where the task should run */
+
+  if (DHTtaskHandle == NULL) {
+    Serial.println("Failed to start task for temperature update");
+    return false;
+  } else {
+    // Start update of environment data every 2 seconds
+    DHTtimer.attach(10, DHTtimerCallback);
+  }
+  return true;
+}
+
+//-------------------------------------------------------------
+void DHTtimerCallback() {
+  if (DHTtaskHandle != NULL)
+  {
+     xTaskResumeFromISR(DHTtaskHandle);
+  }
+}
+
+/**
+ * Task to reads temperature from DHT11 sensor
+ * @param pvParameters
+ *    pointer to task parameters
+ */
+void DHTtask(void *pvParameters)
+{
+  Serial.printf("%s started\n",__FUNCTION__);
+
+  while (1) // tempTask loop
+  {
+    if (bLoopingDHT)
     {
-        Serial.println(F("Failed to read from DHT sensor!"));
-        return;
+      // Get temperature values
+      getTemperature();
     }
+    // Go sleep again
+    vTaskSuspend(NULL);
+  }
+}
+//-------------------------------------------------------------
 
-    // Compute heat index in Fahrenheit (the default)
-    float hif = dht.computeHeatIndex(f, h);
-    // Compute heat index in Celsius (isFahreheit = false)
-    float hic = dht.computeHeatIndex(t, h, false);
+/**
+ * getTemperature
+ * Reads temperature from DHT11 sensor
+ * @return bool
+ *    true if temperature could be aquired
+ *    false if aquisition failed
+*/
+bool getTemperature() {
+  // Reading temperature for humidity takes about 250 milliseconds!
+  // Sensor readings may also be up to 2 seconds 'old' (it's a very slow sensor)
+  TempAndHumidity newValues = dht.getTempAndHumidity();
 
-    Serial.print(F("Humidity: "));
-    Serial.print(h);
-    Serial.print(F("%  Temperature: "));
-    Serial.print(t);
-    Serial.print(F("°C "));
-    Serial.print(f);
-    Serial.print(F("°F  Heat index: "));
-    Serial.print(hic);
-    Serial.print(F("°C "));
-    Serial.print(hif);
-    Serial.println(F("°F"));
+  // Check if any reads failed and exit early (to try again).
+  if (dht.getStatus() != 0)
+  {
+    Serial.println("DHT11 error status: " + String(dht.getStatusString()));
+    return false;
+  }
+
+  temperature   = newValues.temperature;
+  humidity      = newValues.humidity;
+  heatIndex     = dht.computeHeatIndex(newValues.temperature, newValues.humidity);
+  dewPoint      = dht.computeDewPoint(newValues.temperature, newValues.humidity);
+  comfortRatio  = dht.getComfortRatio(cf, newValues.temperature, newValues.humidity);
+  perception = dht.computePerception(temperature, humidity, false);
+
+  switch (perception)
+  {
+    case Perception_Dry :
+        pcPerception = "Dry";
+        break;
+    case Perception_VeryComfy :
+        pcPerception = "VeryComfy";
+        break;
+    case Perception_Comfy :
+        pcPerception = "Comfy";
+        break;
+    case Perception_Ok :
+        pcPerception = "Ok";
+        break;
+    case Perception_UnComfy :
+        pcPerception = "UnComfy";
+        break;
+    case Perception_QuiteUnComfy :
+        pcPerception = "QuiteUnComfy";
+        break;
+    case Perception_VeryUnComfy :
+        pcPerception = "VeryUnComfy";
+        break;
+    case Perception_SevereUncomfy :
+        pcPerception = "SevereUncomfy";
+        break;
+  }
+
+
+  switch(cf) {
+    case Comfort_OK:
+      pcComfortString = "Comfort_OK";
+      break;
+    case Comfort_TooHot:
+      pcComfortString = "Comfort_TooHot";
+      break;
+    case Comfort_TooCold:
+      pcComfortString = "Comfort_TooCold";
+      break;
+    case Comfort_TooDry:
+      pcComfortString = "Comfort_TooDry";
+      break;
+    case Comfort_TooHumid:
+      pcComfortString = "Comfort_TooHumid";
+      break;
+    case Comfort_HotAndHumid:
+      pcComfortString = "Comfort_HotAndHumid";
+      break;
+    case Comfort_HotAndDry:
+      pcComfortString = "Comfort_HotAndDry";
+      break;
+    case Comfort_ColdAndHumid:
+      pcComfortString = "Comfort_ColdAndHumid";
+      break;
+    case Comfort_ColdAndDry:
+      pcComfortString = "Comfort_ColdAndDry";
+      break;
+    default:
+      pcComfortString = "Unknown:";
+      break;
+  };
+
+  Serial.printf(" Real Temp : %4.1f Humidity : %4.1f Feels Like: %4.1f Dew Point: %4.1f  %s (%s)\n",
+      temperature, humidity, heatIndex, dewPoint, pcComfortString, pcPerception);
+
+//  Serial.println(" Real Temp:" + String(newValues.temperature) +
+//                  " Humidity :" + String(newValues.humidity) +
+//                  "\n Feels Like:" + String(heatIndex) + " Dew Point:" + String(dewPoint) +
+//                  " " +
+//                  comfortStatus);
+
+  return true;
 }
 
-void tempHumidityTask (void *parameter)
+//-------------------------------------------------------------
+void setupDHT()
 {
-    Serial.printf("%s: running\n", __FUNCTION__);
-    while(true)
-    {
-        // Wait a few seconds between measurements.
-        delay(3000);
-        readDHT(__FUNCTION__);
+  initDHT();
 
-   }
+  // Signal end of setup() to tasks
+  bLoopingDHT = true;
+  LINE;
 }
+//-------------------------------------------------------------
+void loopDHT() {
+  if (!bLoopingDHT)
+  {
+    // Wait 2 seconds to let system settle down
+    delay(2000);
+    // Enable task that will read values from the DHT sensor
+    bLoopingDHT = true;
+
+    if (DHTtaskHandle != NULL)
+    {
+      vTaskResume(DHTtaskHandle);
+    }
+  }
+  yield();
+}
+
 
 
 #if 0
