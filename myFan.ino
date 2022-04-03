@@ -20,14 +20,13 @@ uint8_t servo[2] = { SERVO1, SERVO2};
 #include "DHT.h"
 
 //// repurposed  #define GREEN_LED 25GO GPIO25
-#define DHT_DATA_PIN 25     // Digital pin connected to the DHT sensor
+#define DHT_DATA_PIN 25    // Digital pin connected to the DHT sensor
 
 // Uncomment whatever type you're using!
-#define DHTTYPE DHT11   // DHT 11
-//#define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
-//#define DHTTYPE DHT21   // DHT 21 (AM2301)
+#define DHTTYPE DHT11      // DHT 11
+//#define DHTTYPE DHT22    // DHT 22  (AM2302), AM2321
+//#define DHTTYPE DHT21    // DHT 21 (AM2301)
 
-DHT dht(DHT_DATA_PIN, DHTTYPE);
 //-----------------------------------------------------------
 
 #define TTGO
@@ -61,147 +60,8 @@ volatile bool bTimerRunning[2];
 static QueueHandle_t RPMDataQueue[2] = {NULL, NULL};
 
 Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(0x40);
+DHT dht(DHT_DATA_PIN, DHTTYPE);
 
-//------------------------------------------------------------
-// For a connection via I2C using the Arduino Wire include:
-#include <Wire.h>              // Only needed for Arduino 1.6.5 and earlier
-#include "SSD1306Wire.h"        // legacy: #include "SSD1306.h"
-#include "boards.h"
-
-uint8_t vertPositionInPixels = 0;
-uint8_t horzPositionInPixels = 0;
-
-// no reset on ttgo for lcd
-SSD1306Wire oled(0x3c, I2C_SDA, I2C_SCL);
-//--------------------------------------------
-
-#include "font.h"
-//static const uint8_t *charSet = Roboto_Mono_14; //Nimbus_Mono_L_Regular_16; // Roboto_Mono_48/32/14/_10;
-static const uint8_t *charSet = DejaVu_Sans_Mono_10 ; // Roboto_Mono_48/32/14/_10;
-
-int oprintf(uint8_t row, const char * format,...)
-{
-    int ret = 0;
-    char buffer[120];
-
-    va_list args;
-    va_start (args, format);
-
-    uint8_t charHeightPixels = pgm_read_byte(charSet + HEIGHT_POS);
-    uint8_t charWidthPixels = pgm_read_byte(charSet + WIDTH_POS);
-
-    // mod true physical to align with a char boundary
-    const uint16_t displayWidthInPixels = (oled.width() /charWidthPixels) * charWidthPixels ;
-    uint16_t displayHeightInPixels = (oled.height() / charHeightPixels) * charHeightPixels;
-
-    uint16_t maxNumHChars = max(displayWidthInPixels/charWidthPixels, 1);
-    //Serial.printf("max no chars = %d\n", maxNumHChars);
-
-    uint8_t maxRowNum = displayHeightInPixels/charHeightPixels - 1;
-
-    //Serial.printf("width adj=%d  real=%d\n", displayWidthInPixels, oled.width());
-    //Serial.printf("width adj=%d  real=%d\n", displayHeightInPixels, oled.height());
-
-    if (row <= maxRowNum)
-    {
-        vertPositionInPixels = row * charHeightPixels;
-
-        ret = vsnprintf (buffer, sizeof(buffer)-1,format, args);
-
-        // erase old text
-        oled.setColor(BLACK);
-        oled.fillRect(0, vertPositionInPixels, displayWidthInPixels, charHeightPixels);
-
-        oled.setColor(WHITE);
-
-        buffer[min(ret, maxNumHChars-1)] = 0;  // truncate string if too long for font and display
-
-        oled.drawString(0, vertPositionInPixels, buffer);
-
-        //for debug. Write a boarder around the writable text region.
-        //oled.drawRect(0, 0, displayWidthInPixels, displayHeightInPixels); // logical phys disp.
-        //oled.drawRect(0, 0, oled.width(), oled.height()); // max phys disp.
-
-        oled.display();
-
-        vertPositionInPixels += charHeightPixels;
-        if (vertPositionInPixels + charHeightPixels > oled.height()) vertPositionInPixels = 0; //zero based hence >=
-    }
-    else
-    {
-      Serial.printf("%s, row out of bounds. Range 0..%d\n", __FUNCTION__, maxRowNum);
-    }
-
-
-    return ret;
-}
-
-//---------------------------------------
-void quickLog(const char * format,...)
-{
-    va_list args;
-    va_start (args, format);
-
-    int ret;
-    char buffer[120];
-    char output[150];
-
-    time_t epoch;
-    time(&epoch);
-    struct tm ts_now;
-
-    ts_now = *localtime(&epoch);
-
-    unsigned long now = micros();
-
-    char  tbuffer[20];
-    strftime(tbuffer, sizeof(tbuffer), "%m-%d %H:%M", &ts_now);
-
-    char cSummary = 'X';  // general message
-
-    ret = vsnprintf (buffer,sizeof(buffer)-1,format, args);
-    sprintf(output, "%c %lu  %s | %s \n", cSummary, epoch, tbuffer, buffer);
-
-    log2SD(output);
-    Serial.println(output);
-
-    va_end (args);
-
-}
-
-
-//---------------------------------------
-char one2oneMapping (const unsigned char foo)
-{
-    return foo; // default UTF-8 mapper kills all chars > 127 :P
-}
-//---------------------------------------
-
-int setOLED(void)
-{
-    oled.init();
-    oled.clear();
-    oled.flipScreenVertically();
-
-    oled.setFontTableLookupFunction(one2oneMapping);  // now chars above 127 will be printed!!!!!!
-
-    oled.setTextAlignment(TEXT_ALIGN_LEFT);
-    oled.setFont(charSet);
-//    oprintf(0,"Built: %s", __DATE__);
-//    oprintf(1,"Wifi is:%s", MY_SSID);
-//    oprintf(2,"SD log=%s JTAG=%s", SDCARD_LOGGING ? "ON":"OFF", SDCARD_LOGGING ? "OFF":"ON");
-
-#if 0
-    // test extended character set (now chars at 0x80-0x9F)
-    for (int i = 0xA0; i < 0x100; i++)
-    {
-        oprintf(1,"%02X=%c", i, i);
-        oled.display();
-        delay(500);
-    }
-#endif
-
-}
 //------------------------------------------------------------
 
 volatile int timerCntISR;    // Triggervolatile int bTimerRunning[fanNum];
@@ -355,6 +215,7 @@ void print_reset_reason(/*RESET_REASON*/ int reason)
   }
 }
 
+#define LINE do{Serial.printf("%s:%d\n",__FUNCTION__,__LINE__);delay(100);}while(0);
 //-------------------------------------------------------------------------
 void setup() {
 
@@ -364,24 +225,25 @@ void setup() {
   //setOLED(); DO NOT ENABLE. IT FREEZES THE CORE.
 
   Serial.printf("xxxx\n");
-  setupPWM();
+  delay(1000);
 
-  Serial.println("CPU0 reset reason: ");
-  print_reset_reason(rtc_get_reset_reason(0));
 
   int cpu0Reset = rtc_get_reset_reason(0);
-  Serial.println("CPU0 reset reason: ");
+  Serial.print("CPU0 reset reason: ");
   print_reset_reason(cpu0Reset);
 
   int cpu1Reset = rtc_get_reset_reason(1);
-  Serial.println("CPU1 reset reason: ");
+  Serial.print("CPU1 reset reason: ");
   print_reset_reason(cpu1Reset);
 
+  LINE
+  //setupWiFi();  // setup the time first. what a mess.
+  delay(1000);
   dht.begin();
+  setupPWM();
 
-  setupWiFi();  // setup the time first. what a mess.
 
-#if !JTAG_PRESENT
+#if 0 // !JTAG_PRESENT
   setupFS();    // fs needs time from wifi.
 
   //----------------------------------------------------------
@@ -411,7 +273,6 @@ void setup() {
   // now SCOPE_GPIO is an output for the scope.
   pinMode(SCOPE_PIN,OUTPUT);
 
-  setupDeadAirTimer();
 
   RPMDataQueue[0] = xQueueCreate(20, sizeof(MESSAGE));
   RPMDataQueue[1] = xQueueCreate(20, sizeof(MESSAGE));
@@ -419,7 +280,7 @@ void setup() {
   pinMode(RPM_FAN1_PIN, INPUT);
   pinMode(RPM_FAN2_PIN, INPUT);
 
-
+#if 0
    xTaskCreatePinnedToCore(
                   rpmTask,       /* Function to implement the task */
                   "rpmTask",      /* Name of the task */
@@ -428,7 +289,8 @@ void setup() {
                   0,              /* Priority of the task */
                   NULL,           /* Task handle. */
                   0);             /* Core where the task should run */
-
+#endif
+#if 1
     xTaskCreatePinnedToCore(
                    rpmTask,       /* Function to implement the task */
                    "rpmTask",      /* Name of the task */
@@ -440,18 +302,21 @@ void setup() {
 
 
     // Write to PCA9685
+#endif
 
+#if 1
+        xTaskCreatePinnedToCore(
+                       tempHumidityTask,       /* Function to implement the task */
+                       "tempHumidityTask",       /* Name of the task */
+                       30000,                    /* Stack size in words */
+                       (void *)1,                /* pass in */
+                       0,                        /* Priority of the task */
+                       NULL,                     /* Task handle. */
+                       1);                       /* Core where the task should run */
+#endif
+    delay(100);
     pca9685.setPWM(servo[0], 0, 0 ); // all fans off
     pca9685.setPWM(servo[1], 0, 0 );
-
-    xTaskCreatePinnedToCore(
-                   tempHumidityTask,       /* Function to implement the task */
-                   "tempHumidityTask",       /* Name of the task */
-                   10000,                    /* Stack size in words */
-                   (void *)1,                /* Fan number 1 Task */
-                   0,                        /* Priority of the task */
-                   NULL,                     /* Task handle. */
-                   0);                       /* Core where the task should run */
 
 #if 0
     xTaskCreatePinnedToCore(
@@ -461,8 +326,10 @@ void setup() {
                    (void *)0,      /* fan 0 */
                    0,              /* Priority of the task */
                    NULL,           /* Task handle. */
-                   0);             /* Core where the task should run */
-#else
+                   1);             /* Core where the task should run */
+#endif
+
+#if 0
     xTaskCreatePinnedToCore(
                    controlTask,   /* Function to implement the task */
                    "controlTask",  /* Name of the task */
@@ -470,14 +337,17 @@ void setup() {
                    (void *)1,      /* fan 1 */
                    0,              /* Priority of the task */
                    NULL,           /* Task handle. */
-                   0);             /* Core where the task should run */
+                   1);             /* Core where the task should run */
 #endif
 
-    delay(3000);
 
     attachInterrupt(RPM_FAN1_PIN, irq_handler0, CHANGE);
     attachInterrupt(RPM_FAN2_PIN, irq_handler1, CHANGE);
+    setupDeadAirTimer();
 
+    readDHT(__FUNCTION__);
+    delay(3000);
+    Serial.println("setup done");
 }
 
 static unsigned long lastLoTime[2] = {1,1};
@@ -547,7 +417,9 @@ void irq_handler1(void)
 
 void loop()
 {
-   vTaskSuspend(NULL);
+   delay(6500);
+   readDHT(__FUNCTION__);
+   //vTaskSuspend(NULL);
 }
 //------------------------------------------------------------------------------
 
@@ -576,7 +448,7 @@ void setupPWM() {
   Serial.begin(115200);
 
   // Print to monitor
-  Serial.println("PCA9685 Servo Test");
+  Serial.printf("%s: init\n",__FUNCTION__);
 
   // Initialize PCA9685
   pca9685.begin();
@@ -599,7 +471,7 @@ void controlTask( void * parameter )
 
       // don't do above 96% it never settles.
 
-      for (requestedPwrPct[fanNum] = 96; requestedPwrPct[fanNum] >= 0; requestedPwrPct[fanNum]--) {
+      for (requestedPwrPct[fanNum] = 0; requestedPwrPct[fanNum] < 90; requestedPwrPct[fanNum]++) {
 
         lastRPM = 0.0;
         unsigned int tries = 0;
@@ -632,44 +504,197 @@ void controlTask( void * parameter )
     }
 }
 
+void readDHT(const char *msg)
+{
+    // Reading temperature or humidity takes about 250 milliseconds!
+    // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+    float h = dht.readHumidity();
+    // Read temperature as Celsius (the default)
+    float t = dht.readTemperature();
+    // Read temperature as Fahrenheit (isFahrenheit = true)
+    float f = dht.readTemperature(true);
+
+    Serial.printf("from msg %s on core %d ", msg, xPortGetCoreID());
+
+    // Check if any reads failed and exit early (to try again).
+    if (isnan(h) || isnan(t) || isnan(f))
+    {
+        Serial.println(F("Failed to read from DHT sensor!"));
+        return;
+    }
+
+    // Compute heat index in Fahrenheit (the default)
+    float hif = dht.computeHeatIndex(f, h);
+    // Compute heat index in Celsius (isFahreheit = false)
+    float hic = dht.computeHeatIndex(t, h, false);
+
+    Serial.print(F("Humidity: "));
+    Serial.print(h);
+    Serial.print(F("%  Temperature: "));
+    Serial.print(t);
+    Serial.print(F("°C "));
+    Serial.print(f);
+    Serial.print(F("°F  Heat index: "));
+    Serial.print(hic);
+    Serial.print(F("°C "));
+    Serial.print(hif);
+    Serial.println(F("°F"));
+}
+
 void tempHumidityTask (void *parameter)
 {
     Serial.printf("%s: running\n", __FUNCTION__);
     while(true)
     {
         // Wait a few seconds between measurements.
-        delay(2000);
+        delay(3000);
+        readDHT(__FUNCTION__);
 
-        // Reading temperature or humidity takes about 250 milliseconds!
-        // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
-        float h = dht.readHumidity();
-        // Read temperature as Celsius (the default)
-        float t = dht.readTemperature();
-        // Read temperature as Fahrenheit (isFahrenheit = true)
-        float f = dht.readTemperature(true);
-
-        // Check if any reads failed and exit early (to try again).
-        if (isnan(h) || isnan(t) || isnan(f)) {
-        Serial.println(F("Failed to read from DHT sensor!"));
-        return;
-        }
-
-        // Compute heat index in Fahrenheit (the default)
-        float hif = dht.computeHeatIndex(f, h);
-        // Compute heat index in Celsius (isFahreheit = false)
-        float hic = dht.computeHeatIndex(t, h, false);
-
-        Serial.print(F("Humidity: "));
-        Serial.print(h);
-        Serial.print(F("%  Temperature: "));
-        Serial.print(t);
-        Serial.print(F("°C "));
-        Serial.print(f);
-        Serial.print(F("°F  Heat index: "));
-        Serial.print(hic);
-        Serial.print(F("°C "));
-        Serial.print(hif);
-        Serial.println(F("°F"));
    }
 }
+
+
+#if 0
+//------------------------------------------------------------
+// For a connection via I2C using the Arduino Wire include:
+#include <Wire.h>              // Only needed for Arduino 1.6.5 and earlier
+#include "SSD1306Wire.h"        // legacy: #include "SSD1306.h"
+#include "boards.h"
+
+uint8_t vertPositionInPixels = 0;
+uint8_t horzPositionInPixels = 0;
+
+// no reset on ttgo for lcd
+SSD1306Wire oled(0x3c, I2C_SDA, I2C_SCL);
+//--------------------------------------------
+
+#include "font.h"
+//static const uint8_t *charSet = Roboto_Mono_14; //Nimbus_Mono_L_Regular_16; // Roboto_Mono_48/32/14/_10;
+static const uint8_t *charSet = DejaVu_Sans_Mono_10 ; // Roboto_Mono_48/32/14/_10;
+
+int oprintf(uint8_t row, const char * format,...)
+{
+    int ret = 0;
+    char buffer[120];
+
+    va_list args;
+    va_start (args, format);
+
+    uint8_t charHeightPixels = pgm_read_byte(charSet + HEIGHT_POS);
+    uint8_t charWidthPixels = pgm_read_byte(charSet + WIDTH_POS);
+
+    // mod true physical to align with a char boundary
+    const uint16_t displayWidthInPixels = (oled.width() /charWidthPixels) * charWidthPixels ;
+    uint16_t displayHeightInPixels = (oled.height() / charHeightPixels) * charHeightPixels;
+
+    uint16_t maxNumHChars = max(displayWidthInPixels/charWidthPixels, 1);
+    //Serial.printf("max no chars = %d\n", maxNumHChars);
+
+    uint8_t maxRowNum = displayHeightInPixels/charHeightPixels - 1;
+
+    //Serial.printf("width adj=%d  real=%d\n", displayWidthInPixels, oled.width());
+    //Serial.printf("width adj=%d  real=%d\n", displayHeightInPixels, oled.height());
+
+    if (row <= maxRowNum)
+    {
+        vertPositionInPixels = row * charHeightPixels;
+
+        ret = vsnprintf (buffer, sizeof(buffer)-1,format, args);
+
+        // erase old text
+        oled.setColor(BLACK);
+        oled.fillRect(0, vertPositionInPixels, displayWidthInPixels, charHeightPixels);
+
+        oled.setColor(WHITE);
+
+        buffer[min(ret, maxNumHChars-1)] = 0;  // truncate string if too long for font and display
+
+        oled.drawString(0, vertPositionInPixels, buffer);
+
+        //for debug. Write a boarder around the writable text region.
+        //oled.drawRect(0, 0, displayWidthInPixels, displayHeightInPixels); // logical phys disp.
+        //oled.drawRect(0, 0, oled.width(), oled.height()); // max phys disp.
+
+        oled.display();
+
+        vertPositionInPixels += charHeightPixels;
+        if (vertPositionInPixels + charHeightPixels > oled.height()) vertPositionInPixels = 0; //zero based hence >=
+    }
+    else
+    {
+      Serial.printf("%s, row out of bounds. Range 0..%d\n", __FUNCTION__, maxRowNum);
+    }
+
+
+    return ret;
+}
+
+//---------------------------------------
+void quickLog(const char * format,...)
+{
+    va_list args;
+    va_start (args, format);
+
+    int ret;
+    char buffer[120];
+    char output[150];
+
+    time_t epoch;
+    time(&epoch);
+    struct tm ts_now;
+
+    ts_now = *localtime(&epoch);
+
+    unsigned long now = micros();
+
+    char  tbuffer[20];
+    strftime(tbuffer, sizeof(tbuffer), "%m-%d %H:%M", &ts_now);
+
+    char cSummary = 'X';  // general message
+
+    ret = vsnprintf (buffer,sizeof(buffer)-1,format, args);
+    sprintf(output, "%c %lu  %s | %s \n", cSummary, epoch, tbuffer, buffer);
+
+    log2SD(output);
+    Serial.println(output);
+
+    va_end (args);
+
+}
+
+
+//---------------------------------------
+char one2oneMapping (const unsigned char foo)
+{
+    return foo; // default UTF-8 mapper kills all chars > 127 :P
+}
+//---------------------------------------
+
+int setOLED(void)
+{
+    oled.init();
+    oled.clear();
+    oled.flipScreenVertically();
+
+    oled.setFontTableLookupFunction(one2oneMapping);  // now chars above 127 will be printed!!!!!!
+
+    oled.setTextAlignment(TEXT_ALIGN_LEFT);
+    oled.setFont(charSet);
+//    oprintf(0,"Built: %s", __DATE__);
+//    oprintf(1,"Wifi is:%s", MY_SSID);
+//    oprintf(2,"SD log=%s JTAG=%s", SDCARD_LOGGING ? "ON":"OFF", SDCARD_LOGGING ? "OFF":"ON");
+
+#if 0
+    // test extended character set (now chars at 0x80-0x9F)
+    for (int i = 0xA0; i < 0x100; i++)
+    {
+        oprintf(1,"%02X=%c", i, i);
+        oled.display();
+        delay(500);
+    }
+#endif
+
+}
+
+#endif
 
