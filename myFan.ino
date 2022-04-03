@@ -16,12 +16,25 @@ uint8_t servo[2] = { SERVO1, SERVO2};
 
 #include "Protos.h"
 
+//-----------------------------------------------------------
+#include "DHT.h"
+
+//// repurposed  #define GREEN_LED 25GO GPIO25
+#define DHT_DATA_PIN 25     // Digital pin connected to the DHT sensor
+
+// Uncomment whatever type you're using!
+#define DHTTYPE DHT11   // DHT 11
+//#define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
+//#define DHTTYPE DHT21   // DHT 21 (AM2301)
+
+DHT dht(DHT_DATA_PIN, DHTTYPE);
+//-----------------------------------------------------------
+
 #define TTGO
 
 #define ROTATION_STOPPED_uS 2000000
 
 
-#define GREEN_LED           25 // TTGO GPIO25
 
 #define RPM_FAN1_PIN        34
 #define RPM_FAN2_PIN        35
@@ -216,7 +229,7 @@ void IRAM_ATTR irqTimedOut(uint8_t fanNum)
 
    if (RPMDataQueue[fanNum]) xQueueSendToBackFromISR(RPMDataQueue[fanNum], &ipc, NULL);
 
-   digitalWrite(GREEN_LED, 0);
+   ////digitalWrite(GREEN_LED, 0);
 
    portEXIT_CRITICAL_ISR(&criticalSection);
 }
@@ -364,10 +377,7 @@ void setup() {
   Serial.println("CPU1 reset reason: ");
   print_reset_reason(cpu1Reset);
 
-  pinMode(GREEN_LED,OUTPUT);
-  ScopeBlips(10);
-
-  delay(1000);
+  dht.begin();
 
   setupWiFi();  // setup the time first. what a mess.
 
@@ -433,6 +443,15 @@ void setup() {
 
     pca9685.setPWM(servo[0], 0, 0 ); // all fans off
     pca9685.setPWM(servo[1], 0, 0 );
+
+    xTaskCreatePinnedToCore(
+                   tempHumidityTask,       /* Function to implement the task */
+                   "tempHumidityTask",       /* Name of the task */
+                   10000,                    /* Stack size in words */
+                   (void *)1,                /* Fan number 1 Task */
+                   0,                        /* Priority of the task */
+                   NULL,                     /* Task handle. */
+                   0);                       /* Core where the task should run */
 
 #if 0
     xTaskCreatePinnedToCore(
@@ -503,7 +522,7 @@ void irq_handler(unsigned fanNum)
         bTimerRunning[fanNum] = true;
         timerAlarmWrite(hRotationStoppedTimer[fanNum], ROTATION_STOPPED_uS , false);  // reload threshold, no auto reload
         timerAlarmEnable(hRotationStoppedTimer[fanNum]);
-        digitalWrite(GREEN_LED,1);
+        ////digitalWrite(GREEN_LED,1);
     }
 
     // set rotation timer back to zero.
@@ -611,5 +630,46 @@ void controlTask( void * parameter )
       Serial.printf("fan %d as slow as it can go\n", fanNum);
       delay(10000);
     }
+}
+
+void tempHumidityTask (void *parameter)
+{
+    Serial.printf("%s: running\n", __FUNCTION__);
+    while(true)
+    {
+        // Wait a few seconds between measurements.
+        delay(2000);
+
+        // Reading temperature or humidity takes about 250 milliseconds!
+        // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+        float h = dht.readHumidity();
+        // Read temperature as Celsius (the default)
+        float t = dht.readTemperature();
+        // Read temperature as Fahrenheit (isFahrenheit = true)
+        float f = dht.readTemperature(true);
+
+        // Check if any reads failed and exit early (to try again).
+        if (isnan(h) || isnan(t) || isnan(f)) {
+        Serial.println(F("Failed to read from DHT sensor!"));
+        return;
+        }
+
+        // Compute heat index in Fahrenheit (the default)
+        float hif = dht.computeHeatIndex(f, h);
+        // Compute heat index in Celsius (isFahreheit = false)
+        float hic = dht.computeHeatIndex(t, h, false);
+
+        Serial.print(F("Humidity: "));
+        Serial.print(h);
+        Serial.print(F("%  Temperature: "));
+        Serial.print(t);
+        Serial.print(F("°C "));
+        Serial.print(f);
+        Serial.print(F("°F  Heat index: "));
+        Serial.print(hic);
+        Serial.print(F("°C "));
+        Serial.print(hif);
+        Serial.println(F("°F"));
+   }
 }
 
