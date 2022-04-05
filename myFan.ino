@@ -36,9 +36,6 @@ int DHTpin = 13;
 #define RPM_FAN0_PIN        39
 #define RPM_FAN1_PIN        38
 
-#define SDA                 21 // default but I2C address conflict with oled
-#define SCL                 22 // default but I2C address conflict with oled
-
 #define LINE do{Serial.printf("%s:%d\n",__FUNCTION__,__LINE__);delay(100);}while(0);
 
 
@@ -59,8 +56,6 @@ volatile unsigned int averageRPM[2];
 volatile bool bTimerRunning[2];
 static QueueHandle_t RPMDataQueue[2] = {NULL, NULL};
 
-Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(0x40);
-
 //------------------------------------------------------------
 
 volatile int timerCntISR;    // Triggervolatile int bTimerRunning[fanNum];
@@ -70,6 +65,47 @@ hw_timer_t * hFanStallTimer[2] = {NULL, NULL};
 //portMUX_TYPE criticalSection = portMUX_INITIALIZER_UNLOCKED;
 
 boolean bStalled[2];
+//-------------------------------------------------------------
+/*
+  ESP32 PCA9685 Servo Control
+  esp32-pca9685.ino
+  https://dronebotworkshop.com
+*/
+
+// Define maximum and minimum number of "ticks" for the servo motors
+// Range from 0 to 4095
+// This determines the pulse width
+
+#ifdef HELTEC
+#define PMW_SDA 0  // cant use classic 21, that's for voltage control on HITEC
+#else
+#define PMW_SDA 21  //SDA classic 21
+#endif
+#define PMW_SCL 22
+
+TwoWire pmw_i2c = TwoWire(0);  // will define SDA and SCL at runtime.
+Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(0x40, pmw_i2c);
+
+#define SERVOMIN  1       // Minimum value
+#define SERVOMAX  4090     // Maximum value
+
+#define SPEED 750  //time in ms b/n steps.
+
+void setupPWM() {
+
+  // Print to monitor
+  Serial.printf("%s: init\n",__FUNCTION__);
+  LINE
+
+  pmw_i2c.begin(PMW_SDA, PMW_SCL, 100000);  // now init I2C pins and speed
+
+  // pmw done, now init PCA9685
+   pca9685.begin();
+  LINE
+  // Set PWM Frequency to x Hz
+  pca9685.setPWMFreq(1000);
+  LINE
+}
 //-------------------------------------------------------------
 
 void IRAM_ATTR irqStallTimeout(uint8_t fanNum)
@@ -159,8 +195,8 @@ void rpmTask( void * parameter )
           averageRPS[fanNum]  = (unsigned int)(1000000. / (float) instPeriod_uS);       // PRS instant
           averageRPM[fanNum] = (unsigned int)(1000000. * 60. / (float) avgPeriod_uS);  // RPM average
 
-//          Serial.printf("%d: req=%4d lo=%5d hi=%5d avg=%5d freq=%f\n",
-//                    fanNum, requestedPwrPct[fanNum], ipc.loTime, ipc.hiTime,  avgPeriod_uS, 1.e6/avgPeriod_uS);  // into RPM
+          Serial.printf("%d: req=%4d lo=%5d hi=%5d avg=%5d freq=%f\n",
+                    fanNum, requestedPwrPct[fanNum], ipc.loTime, ipc.hiTime,  avgPeriod_uS, 1.e6/avgPeriod_uS);  // into RPM
           //Serial.printf("%d: req=%4d lo=%5d hi=%5d avg=%5d\n", fanNum, requestedPwrPct[fanNum], ipc.loTime, ipc.hiTime,  averageRPM[fanNum]);  // into RPM
           //Serial.printf("[%5d %5d]\t", average, timeUsPerRevolution);  // RPS
           //crlf++;
@@ -207,9 +243,10 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
 
-  //setOLED(); DO NOT ENABLE. IT FREEZES THE CORE.
+  setupOLED(); //DO NOT ENABLE on ttgo, ok for Hitec
 
   Serial.printf("xxxx\n");
+  ///delay(100000); // kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
 
   int cpu0Reset = rtc_get_reset_reason(0);
   Serial.print("CPU0 reset reason: ");
@@ -371,40 +408,6 @@ void loop()
    loopDHT();
    //vTaskSuspend(NULL);
 }
-//------------------------------------------------------------------------------
-
-/*
-  ESP32 PCA9685 Servo Control
-  esp32-pca9685.ino
-  Driving multiple servo motors with ESP32 and PCA9685 PWM module
-  Use I2C Bus
-
-  DroneBot Workshop 2020
-  https://dronebotworkshop.com
-*/
-
-// Define maximum and minimum number of "ticks" for the servo motors
-// Range from 0 to 4095
-// This determines the pulse width
-
-#define SERVOMIN  1       // Minimum value
-#define SERVOMAX  4090     // Maximum value
-
-#define SPEED 750  //time in ms b/n steps.
-
-void setupPWM() {
-
-  // Print to monitor
-  Serial.printf("%s: init\n",__FUNCTION__);
-  LINE
-  // Initialize PCA9685
-  pca9685.begin();
-  LINE
-  // Set PWM Frequency to x Hz
-  pca9685.setPWMFreq(1000);
-  LINE
-}
-
 //-------------------------------------------------------------
 void controlTask( void * parameter )
 {
@@ -680,7 +683,7 @@ void loopDHT() {
 
 
 
-#if 0
+#if 1
 //------------------------------------------------------------
 // For a connection via I2C using the Arduino Wire include:
 #include <Wire.h>              // Only needed for Arduino 1.6.5 and earlier
@@ -690,8 +693,32 @@ void loopDHT() {
 uint8_t vertPositionInPixels = 0;
 uint8_t horzPositionInPixels = 0;
 
+#ifdef HELTEC
 // no reset on ttgo for lcd
-SSD1306Wire oled(0x3c, I2C_SDA, I2C_SCL);
+SSD1306Wire oled(0x3c, SDA_OLED, SCL_OLED); //HI-TEc DEFINED
+
+void VextON(void) // power up LED display
+{
+  pinMode(Vext,OUTPUT);
+  digitalWrite(Vext, LOW);
+}
+
+void VextOFF(void) //Vext default OFF power off LED display
+{
+   pinMode(Vext,OUTPUT);
+   digitalWrite(Vext, HIGH);
+}
+
+
+
+#else
+#error NO good for ttgo
+SSD1306Wire oled(0x3c, I2C_SDA, I2C_SCL, I2C_RESET); //ttgo defined
+void VextON(void){} // power up LED display
+void VextOFF(void){} //Vext default OFF power off LED display
+#endif
+
+// no reset on ttgo for lcd
 //--------------------------------------------
 
 #include "font.h"
@@ -796,8 +823,10 @@ char one2oneMapping (const unsigned char foo)
 }
 //---------------------------------------
 
-int setOLED(void)
+int setupOLED(void)
 {
+    VextON();
+
     oled.init();
     oled.clear();
     oled.flipScreenVertically();
@@ -806,9 +835,9 @@ int setOLED(void)
 
     oled.setTextAlignment(TEXT_ALIGN_LEFT);
     oled.setFont(charSet);
-//    oprintf(0,"Built: %s", __DATE__);
-//    oprintf(1,"Wifi is:%s", MY_SSID);
-//    oprintf(2,"SD log=%s JTAG=%s", SDCARD_LOGGING ? "ON":"OFF", SDCARD_LOGGING ? "OFF":"ON");
+    oprintf(0,"Built: %s", __DATE__);
+    oprintf(1,"Wifi is:%s", MY_SSID);
+    oprintf(2,"SD log=%s JTAG=%s", SDCARD_LOGGING ? "ON":"OFF", SDCARD_LOGGING ? "OFF":"ON");
 
 #if 0
     // test extended character set (now chars at 0x80-0x9F)
