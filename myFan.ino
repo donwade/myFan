@@ -881,6 +881,8 @@ void oledDisplayTask( void *parameter)
         delay(1000);
         oprintf(0, "OUT req=%3d RPM=%4d", requestedPwrPct[0] ,averageRPM[0]);
         oprintf(1, "IN  req=%3d RPM=%4d", requestedPwrPct[1] ,averageRPM[1]);
+        oprintf(2, "temp=%4.1f feel=%4.1f", temperature, heatIndex);
+        oprintf(3, "dew =%4.1f comf=%4.1f", dewPoint, comfortRatio);
     }
 }
 
