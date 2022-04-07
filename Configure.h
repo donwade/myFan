@@ -3,7 +3,7 @@
 
 #define ERASE_SD_ONPOWERUP 0
 
-#define WIFI_AVAILABLE  1
+#define WIFI_AVAILABLE  0
 
 #if WIFI_AVAILABLE 
   #include "../wifiSecret.h"  // not inside of git control
@@ -36,4 +36,3 @@
 #define TZ_INFO  "EST5EDT"
 
 #endif  //__DEFINES_H__
-

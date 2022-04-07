@@ -463,6 +463,9 @@ void controlTask( void * parameter )
 #error Select ESP32 board.
 #endif
 
+// derived from https://github.com/beegee-tokyo/DHTesp.git
+
+
 /**************************************************************/
 /* Example how to read DHT sensors from an ESP32 using multi- */
 /* tasking.                                                   */
@@ -685,17 +688,17 @@ void loopDHT() {
 
 #if 1
 //------------------------------------------------------------
-// For a connection via I2C using the Arduino Wire include:
-#include <Wire.h>              // Only needed for Arduino 1.6.5 and earlier
-#include "SSD1306Wire.h"        // legacy: #include "SSD1306.h"
-#include "boards.h"
 
 uint8_t vertPositionInPixels = 0;
 uint8_t horzPositionInPixels = 0;
 
-#ifdef HELTEC
+#ifdef ARDUINO_heltec_wifi_lora_32_V2
+#include "Arduino.h"
+
+#include "heltec.h"  // interesting...this picks up all heltec headers.
+
 // no reset on ttgo for lcd
-SSD1306Wire oled(0x3c, SDA_OLED, SCL_OLED); //HI-TEc DEFINED
+SSD1306Wire oled(0x3c, SDA_OLED, SCL_OLED, RST_OLED); //HI-TEc DEFINED
 
 void VextON(void) // power up LED display
 {
@@ -709,9 +712,12 @@ void VextOFF(void) //Vext default OFF power off LED display
    digitalWrite(Vext, HIGH);
 }
 
-
-
 #else
+// For a connection via I2C using the Arduino Wire include:
+#include <Wire.h>              // Only needed for Arduino 1.6.5 and earlier
+#include "SSD1306Wire.h"        // legacy: #include "SSD1306.h"
+#include "boards.h"
+
 #error NO good for ttgo
 SSD1306Wire oled(0x3c, I2C_SDA, I2C_SCL, I2C_RESET); //ttgo defined
 void VextON(void){} // power up LED display
@@ -852,4 +858,3 @@ int setupOLED(void)
 }
 
 #endif
-
