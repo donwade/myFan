@@ -83,7 +83,7 @@ boolean bStalled[2];
 #endif
 #define PMW_SCL 22
 
-TwoWire pmw_i2c = TwoWire(0);  // will define SDA and SCL at runtime.
+TwoWire pmw_i2c = TwoWire(1);  // specify I2C controller 1, SDA and SCL defined later.
 Adafruit_PWMServoDriver pca9685 = Adafruit_PWMServoDriver(0x40, pmw_i2c);
 
 #define SERVOMIN  1       // Minimum value
@@ -243,7 +243,6 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
 
-  setupOLED(); //DO NOT ENABLE on ttgo, ok for Hitec
 
   Serial.printf("xxxx\n");
   ///delay(100000); // kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
@@ -327,6 +326,17 @@ void setup() {
     // Write to PCA9685
 #endif
 
+    setupOLED();
+
+    xTaskCreatePinnedToCore(
+                   oledDisplayTask,   /* Function to implement the task */
+                   "oledDisplay",  /* Name of the task */
+                   30000,          /* Stack size in words */
+                   (void *)1,      /* fan 1 */
+                   0,              /* Priority of the task */
+                   NULL,           /* Task handle. */
+                   1);             /* Core where the task should run */
+
     setupDeadAirTimer();  // before rpm please !
 
     attachInterrupt(RPM_FAN0_PIN, irqRpmFan0, CHANGE);
@@ -408,6 +418,7 @@ void loop()
    loopDHT();
    //vTaskSuspend(NULL);
 }
+//-------------------------------------------------------------
 //-------------------------------------------------------------
 void controlTask( void * parameter )
 {
@@ -857,4 +868,21 @@ int setupOLED(void)
 
 }
 
+
 #endif
+
+//------------------------------------------------------------
+void oledDisplayTask( void *parameter)
+{
+    Serial.printf("%s running\n", __FUNCTION__);
+    while (1)
+    {
+        static uint32_t count;
+        LINE;
+        delay(1000);
+        oled.clear();
+        oprintf(0, "RPM out=%4d in=%4d", averageRPM[0], averageRPM[1]);
+        oprintf(1, "count %d", count++);
+    }
+}
+
