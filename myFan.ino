@@ -874,15 +874,13 @@ int setupOLED(void)
 //------------------------------------------------------------
 void oledDisplayTask( void *parameter)
 {
+    oled.clear();
     Serial.printf("%s running\n", __FUNCTION__);
     while (1)
     {
-        static uint32_t count;
-        LINE;
         delay(1000);
-        oled.clear();
-        oprintf(0, "RPM out=%4d in=%4d", averageRPM[0], averageRPM[1]);
-        oprintf(1, "count %d", count++);
+        oprintf(0, "OUT req=%3d RPM=%4d", requestedPwrPct[0] ,averageRPM[0]);
+        oprintf(1, "IN  req=%3d RPM=%4d", requestedPwrPct[1] ,averageRPM[1]);
     }
 }
 
